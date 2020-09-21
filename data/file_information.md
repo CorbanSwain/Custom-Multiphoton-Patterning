@@ -78,3 +78,26 @@
   * 7 = blank
   * 8 = blank
   * 9 = blank
+
+## test_z_mask_07
+* shape: (64, 64, 10)
+* pages
+  * 0 = blank
+  * 1 = blank 
+  * 2 = rect form (0, 0) to (0, 0)
+  * 3 = rect from (0, 0) to (1, 0)
+  * 4 = rect from (0, 0) to (2, 0)
+  * 5 = rect from (1, 0) to (5, 1)
+  * 6 = rect from (1, 0) to (5, 1); rect from (10, 1) to (15, 1)
+  * 7 = rect from (0, 0) to (0, 8)
+  * 8 = rect from (3, 4) to (16, 14); rect from (38, 11) to (41, 14); rect from (3, 19) to (11, 26)
+  * 9 = blank
+
+## test_z_mask_08
+* shape: (128, 128, 5)
+* pages
+  * 0 = blank
+  * 1 = blank 
+  * 2 = rect form (0, 0) to (0, 0)
+  * 3 = rect from (0, 0) to (1, 0)
+  * 4 = rect from (1, 0) to (5, 1); rect from (10, 1) to (15, 1)
