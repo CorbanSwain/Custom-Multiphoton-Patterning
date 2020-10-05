@@ -3,10 +3,12 @@
 
 import numpy as np
 import os
+import enum
 
 
 default_encoding = 'utf8'
 default_byteorder = 'little'  # ... endian
+byte_word_length = 4
 
 
 def isint(x):
@@ -16,6 +18,8 @@ def isint(x):
 def iseven(x):
     return (x % 2) == 0
 
+
+# to bytes
 
 def uint_to_bytes(x,
                   length,
@@ -45,6 +49,118 @@ def string_to_bytes(s, encoding=default_encoding):
     return bytes(s, encoding=encoding)
 
 
+# pop bytes
+
+def pop_byte(byte_arr):
+    return byte_arr.pop(0)
+
+
+def pop_bytes(byte_arr, n):
+    return bytes([pop_byte(byte_arr) for _ in range(n)])
+
+
+def pop_word(byte_arr):
+    return pop_bytes(byte_arr, byte_word_length)
+
+
+def bytes_to_uint(byts, byteorder=default_byteorder):
+    return int.from_bytes(byts, byteorder=byteorder, signed=False)
+
+
+def pop_uint8(byte_arr):
+    return pop_byte(byte_arr)
+
+
+def pop_uint16(byte_arr):
+    return bytes_to_uint(pop_bytes(byte_arr, 2))
+
+
+def pop_uint32(byte_arr):
+    return bytes_to_uint(pop_bytes(byte_arr, 4))
+
+
+def pop_string(byts, n, encoding=default_encoding):
+    return pop_bytes(byts, n).decode(encoding)
+
+
+# peek bytes
+
+def peek_byte(byts):
+    return byts[0]
+
+
+def peek_bytes(byts, n):
+    return bytes(byts[:n])
+
+
+def peek_word(byts):
+    return peek_bytes(byts, byte_word_length)
+
+
+def peek_uint8(byts):
+    return peek_byte(byts)
+
+
+def peek_uint16(byts):
+    return bytes_to_uint(peek_bytes(byts, 2))
+
+
+def peek_uint32(byts):
+    return bytes_to_uint(peek_bytes(byts, 4))
+
+
+def peek_string(byts, n, encoding=default_encoding):
+    return peek_bytes(byts, n).decode(encoding)
+
+
+# class definitions
+
+class TokenType(enum.Enum):
+    STRING = enum.auto()
+    UINT_8 = enum.auto()
+    UINT_16 = enum.auto()
+    UINT_32 = enum.auto()
+    PAM_SLICE_BYTES = enum.auto()
+    PAM_FEATURE_BYTES = enum.auto()
+    BYTES = enum.auto()
+
+    def value_string(self, x):
+        uint_types = [TokenType.UINT_8, TokenType.UINT_16, TokenType.UINT_32]
+        pam_object_types = [TokenType.PAM_SLICE_BYTES,
+                            TokenType.PAM_FEATURE_BYTES]
+
+        if self is TokenType.STRING:
+            return (('\'{:s}...\''.format(x[:10]))
+                    if len(x) > 10 else ('\'' + x + '\''))
+        elif self in uint_types:
+            return '{}'.format(x)
+        elif self in pam_object_types:
+            return '{}'.format('[' + ', '.join(['{:d} bytes'.format(len(b))
+                                                for b in x]) + ']')
+        elif self is TokenType.BYTES:
+            return ('[' + ', '.join([f'{b:3d}' for b in
+                                     (x if len(x) <= 4 else x[:4])])
+                    + (', ...' if len(x) > 4 else '')
+                    + ']')
+
+
+class Token(object):
+    def __init__(self, type, value):
+        self.type = type
+        self.value = value
+
+    def __repr__(self):
+        return '{:s}({:17s}, {:})'.format(
+            self.__class__.__name__,
+            self.type.name,
+            self.type.value_string(self.value)
+        )
+
+    @staticmethod
+    def print_list(tokens):
+        [print(f'{i:03d} | {t}') for i, t in enumerate(tokens)]
+
+
 class PAM(object):
     def __init__(self, name=None, shape=None, slices=None):
         self.name = name
@@ -68,6 +184,54 @@ class PAM(object):
 
     def check_consistency(self):
         pass  # TODO
+
+    @classmethod
+    def from_binary(cls, byts):
+        tokens = cls._lex_binary(byts)
+        pam = cls.__init__()
+
+        _token = tokens.pop(0)
+        assert _token.type is TokenType.STRING
+        pam.name = _token.value
+
+        shape = []
+        for _ in range(3):
+            _token = tokens.pop(0)
+            assert _token.type is TokenType.UINT_32
+            shape.append(_token.value)
+        pam.shape = tuple(shape)
+
+        while tokens:
+            pam.slices.append(PAMSlice.from_token(tokens.pop(0)))
+
+        return pam
+
+    @staticmethod
+    def _lex_binary(byts):
+        byte_arr = bytearray(byts)
+        _next_len = pop_uint8(byte_arr)
+        tokens = [Token(TokenType.STRING,
+                        pop_string(byte_arr, _next_len))]
+        tokens += [Token(TokenType.UINT_32,
+                         pop_uint32(byte_arr)) for _ in range(3)]
+
+        while byte_arr:
+            _next_len = pop_uint32(byte_arr)
+            _ = pop_word(byte_arr)
+            slice_bytes = [pop_bytes(byte_arr, _next_len)]
+
+            while True:
+                current_tail = peek_bytes(byte_arr, len(PAMSlice.footer_bytes))
+                if current_tail == PAMSlice.footer_bytes:
+                    _ = pop_bytes(byte_arr, len(current_tail))
+                    break
+                else:
+                    _next_len = pop_uint32(byte_arr)
+                    slice_bytes.append(pop_bytes(byte_arr, _next_len))
+
+            tokens.append(Token(TokenType.PAM_SLICE_BYTES, slice_bytes))
+
+        return tokens
 
 
 class PAMSlice(object):
@@ -95,6 +259,54 @@ class PAMSlice(object):
 
     def __repr__(self):
         pass  # TODO
+
+    @classmethod
+    def from_token(cls, token):
+        assert token.type is TokenType.PAM_SLICE_BYTES  # TODO - add message
+
+        bytes_list = token.value
+
+        if len(bytes_list) > 1:
+            raise NotImplementedError
+        else:
+            byts = bytes_list[0]
+            return cls._from_binary(byts)
+
+    @classmethod
+    def _from_binary(cls, byts):
+        tokens = cls._lex_binary(byts)
+
+    @staticmethod
+    def _lex_binary(byts):
+        byte_arr = bytearray(byts)
+        tokens = []
+
+        _ = pop_word(byte_arr)
+
+        tokens.append(Token(TokenType.BYTES, pop_word(byte_arr)))
+
+        next_len = pop_uint32(byte_arr)
+        tokens.append(Token(TokenType.UINT_32, next_len))
+        _ = pop_bytes(byte_arr, next_len * 2)
+
+        while True:
+            next_word = peek_word(byte_arr)
+            feature_bytes = []
+
+            if (next_word == PAMSlice.end_of_features_bytes
+                    and len(byte_arr) == byte_word_length):
+                if feature_bytes:
+                    tokens.append(Token(TokenType.PAM_FEATURE_BYTES,
+                                        feature_bytes))
+
+                _ = pop_word(byte_arr)
+                break
+            elif next_word == PAMSlice.separator_bytes
+
+        return tokens
+
+
+
 
     @property
     def unknown_order(self):
@@ -137,6 +349,7 @@ class PAMSlice(object):
 
 
 class PAMFeature(object):
+    header_bytes_tail = bytes([0, 0, 16])
     header_bytes = None
     tail_bytes = None
 
@@ -273,10 +486,16 @@ def main():
     pam.slices[0].features.append(EmptyPAMFeature())
     pam.slices[1].features.append(PointPAMFeature(point=(1, 1)))
 
-    print(np.array([b for b in bytes(pam)]))
+    # print(np.array([b for b in bytes(pam)]))
 
     filepath = os.path.join('data', 'gen_test.pam')
     pam.write_binary(filepath)
+
+    filepath = os.path.join('data', 'test_z_mask_05.pam')
+    with open(filepath, 'rb') as fle:
+        byts = fle.read()
+    tokens = PAM._lex_binary(byts)
+    Token.print_list(tokens)
 
 
 if __name__ == '__main__':
