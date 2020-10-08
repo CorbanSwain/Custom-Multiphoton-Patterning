@@ -30,20 +30,55 @@ def indent(string):
 
 
 def bytes_to_binary_str(byts):
-    return ' '.join(format(b, '#010b')[2:] for b in byts)
+    return ' '.join(format(b, '08b') for b in byts)
+
+
+def bytes_to_hex_str(byts):
+    return byts.hex()
 
 
 def bytes_to_int_arr(byts):
     return [b for b in byts]
 
 
+def bytes_to_float(byts):
+    if len(byts) == 2:
+        dtype='float16'
+    elif len(byts) == 4:
+        dtype = 'float32'
+    else:
+        dtype = 'float'
+
+    return np.frombuffer(byts, dtype=dtype).tolist()[0]
+
+
 def bytes_xor(a, b):
     return bytes([_a ^ _b for _a, _b in zip(a, b)])
+
+
+def bytes_and(a, b):
+    return bytes([_a & _b for _a, _b in zip(a, b)])
+
+
+def bytes_or(a, b):
+    return bytes([_a | _b for _a, _b in zip(a, b)])
+
+
+def bytes_colsum(a, b):
+    return bytes().join(bytes_sum(bytes([_a]), bytes([_b]))
+                        for _a, _b in zip(a, b))
 
 
 def bytes_sum(a, b):
     output_len = max(len(a), len(b))
     return uint_to_bytes(bytes_to_uint(a) + bytes_to_uint(b),
+                         length=output_len,
+                         allow_overflow=True)
+
+
+def bytes_diff(a, b):
+    output_len = max(len(a), len(b))
+    return uint_to_bytes(bytes_to_uint(a) - bytes_to_uint(b),
                          length=output_len,
                          allow_overflow=True)
 
@@ -159,17 +194,20 @@ class TokenType(enum.Enum):
                             TokenType.PAM_FEATURE_BYTES]
 
         if self is TokenType.STRING:
-            return (('\'{:s}...\''.format(x[:10]))
-                    if len(x) > 10 else ('\'' + x + '\''))
+            max_string_len = 20
+            return (('\'{:s}...\''.format(x[:max_string_len]))
+                    if len(x) > max_string_len else ('\'' + x + '\''))
         elif self in uint_types:
             return '{}'.format(x)
         elif self in pam_object_types:
             return '{}'.format('[' + ', '.join(['{:d} bytes'.format(len(b))
                                                 for b in x]) + ']')
         elif self is TokenType.BYTES:
+            preview_len = 6
+            pl = preview_len
             return ('[' + ', '.join([f'{b:3d}' for b in
-                                     (x if len(x) <= 4 else x[:4])])
-                    + (', ...' if len(x) > 4 else '')
+                                     (x if len(x) <= pl else x[:pl])])
+                    + (', ...' if len(x) > pl else '')
                     + ']')
 
 
@@ -187,6 +225,49 @@ class Token(object):
 
 def print_token_list(tokens):
     [print(f'{i:03d} | {t}') for i, t in enumerate(tokens)]
+
+
+class PAMList(object):
+    def __init__(self, pams=None):
+        self.pams = [] if pams is None else pams
+
+    def __getitem__(self, item):
+        return self.pams[item]
+
+    def __setitem__(self, key, value):
+        self.pams[key] = value
+
+    def __iter__(self):
+        yield from self.pams
+
+    def __bytes__(self):
+        return bytes().join(bytes(p) for p in self)
+
+    def __repr__(self):
+        return '{:s}(pams=[{:s}])'.format(
+            self.__class__.__name__,
+            ('' if not self.pams else
+             ('\n' + ',\n'.join(indent(f'{p}') for p in self))))
+
+    def write_binary(self, filepath):
+        with open(filepath, 'wb') as fle:
+            fle.write(bytes(self))
+
+    @classmethod
+    def from_binary(cls, byts):
+        pams_like = PAM.from_binary(byts, do_warn=False)
+        if type(pams_like) is PAM:
+            return cls(pams=[pams_like])
+        elif type(pams_like) is PAMList:
+            return pams_like
+        else:
+            raise AssertionError('Expected PAMList or PAM object.')
+
+    @classmethod
+    def from_file(cls, filepath):
+        with open(filepath, 'rb') as fle:
+            byts = fle.read()
+        return cls.from_binary(byts)
 
 
 class PAM(object):
@@ -227,50 +308,67 @@ class PAM(object):
         return cls.from_binary(byts)
 
     @classmethod
-    def from_binary(cls, byts):
+    def from_binary(cls, byts, do_warn=True):
         tokens = cls._lex_binary(byts)
-        pam = cls()
-
-        _token = tokens.pop(0)
-        assert _token.type is TokenType.STRING
-        pam.name = _token.value
-
-        shape = []
-        for _ in range(3):
-            _token = tokens.pop(0)
-            assert _token.type is TokenType.UINT_32
-            shape.append(_token.value)
-        pam.shape = tuple(shape)
+        err_header = 'Error while parsing binary to create PAM object.'
+        assert tokens, err_header + 'Received no tokens after lexing binary.'
+        pam_list = []
 
         while tokens:
-            pam.slices.append(PAMSlice.from_token(tokens.pop(0)))
+            pam = cls()
+            _token = tokens.pop(0)
+            assert _token.type is TokenType.STRING  # TODO - add msg
+            pam.name = _token.value
 
-        return pam
+            shape = []
+            for _ in range(3):
+                _token = tokens.pop(0)
+                assert _token.type is TokenType.UINT_32  # TODO - add msg
+                shape.append(_token.value)
+            pam.shape = tuple(shape)
+
+            for _ in range(shape[-1]):
+                pam.slices.append(PAMSlice.from_token(tokens.pop(0)))
+
+            pam_list.append(pam)
+
+        if len(pam_list) == 1:
+            return pam
+        else:
+            if do_warn:
+                print('Multiple PAMs found while parsing binary, returning a '
+                      'PAMList object.')
+
+            return PAMList(pams=pam_list)
 
     @staticmethod
     def _lex_binary(byts):
         byte_arr = bytearray(byts)
-        _next_len = pop_uint8(byte_arr)
-        tokens = [Token(TokenType.STRING,
-                        pop_string(byte_arr, _next_len))]
-        tokens += [Token(TokenType.UINT_32,
-                         pop_uint32(byte_arr)) for _ in range(3)]
-
+        tokens = []
         while byte_arr:
-            _next_len = pop_uint32(byte_arr)
-            _ = pop_word(byte_arr)
-            slice_bytes = [pop_bytes(byte_arr, _next_len)]
+            _next_len = pop_uint8(byte_arr)
+            tokens += [Token(TokenType.STRING,
+                            pop_string(byte_arr, _next_len))]
+            tokens += [Token(TokenType.UINT_32,
+                             pop_uint32(byte_arr)) for _ in range(3)]
+            _next_len = tokens[-1].value
 
-            while True:
-                current_tail = peek_bytes(byte_arr, len(PAMSlice.footer_bytes))
-                if current_tail == PAMSlice.footer_bytes:
-                    _ = pop_bytes(byte_arr, len(current_tail))
-                    break
-                else:
-                    _next_len = pop_uint32(byte_arr)
-                    slice_bytes.append(pop_bytes(byte_arr, _next_len))
+            for _ in range(_next_len):
+                _next_len = pop_uint32(byte_arr)
+                _ = pop_word(byte_arr)
+                slice_bytes = [pop_bytes(byte_arr, _next_len)]
 
-            tokens.append(Token(TokenType.PAM_SLICE_BYTES, slice_bytes))
+                while True:
+                    current_tail = peek_bytes(byte_arr,
+                                              len(PAMSlice.footer_bytes))
+                    if current_tail == PAMSlice.footer_bytes:
+                        _ = pop_bytes(byte_arr, len(current_tail))
+                        break
+                    else:
+                        _next_len = pop_uint32(byte_arr)
+                        slice_bytes.append(pop_bytes(byte_arr, _next_len))
+
+                tokens.append(Token(TokenType.PAM_SLICE_BYTES, slice_bytes))
 
         return tokens
 
@@ -302,15 +400,19 @@ class PAMSlice(object):
 
     def __repr__(self):
         return '''{:s}(
-    features=[{:s}])'''.format(
+    features=[{:s}]
+    _unknown_bytes={})'''.format(
             self.__class__.__name__,
             ('' if not self.features else
              ('\n' + indent(',\n'.join(indent(f'{s}')
-                                       for s in self.features)))))
+                                       for s in self.features)))),
+            bytes_to_int_arr(self._unknown_bytes))
 
     @classmethod
     def from_token(cls, token):
-        assert token.type is TokenType.PAM_SLICE_BYTES  # TODO - add message
+        assert token.type is TokenType.PAM_SLICE_BYTES, \
+            f'Error while processing token. Expected ' \
+            f'{TokenType.PAM_SLICE_BYTES}, but received {token.type} instead.'
 
         bytes_list = token.value
 
@@ -357,9 +459,9 @@ class PAMSlice(object):
         feature_bytes_list = []
         feature_bytes = pop_word(byte_arr)
         while True:
-            next_word = peek_word(byte_arr)
+            _next_word = peek_word(byte_arr)
 
-            if (next_word == PAMSlice.end_of_features_bytes
+            if (_next_word == PAMSlice.end_of_features_bytes
                     and len(byte_arr) == byte_word_length):
                 if feature_bytes:
                     feature_bytes_list.append(feature_bytes)
@@ -369,7 +471,7 @@ class PAMSlice(object):
                 _ = pop_word(byte_arr)
                 break
 
-            elif next_word.endswith(PAMFeature.header_tail_bytes):
+            elif _next_word.endswith(PAMFeature.header_tail_bytes):
                 feature_bytes_list.append(feature_bytes)
                 tokens.append(Token(TokenType.PAM_FEATURE_BYTES,
                                     feature_bytes_list))
@@ -399,7 +501,7 @@ class PAMSlice(object):
                 unknown_bytes = bytes([98, 250, 255, 121])
 
         if unknown_bytes is None:
-            unknown_bytes = bytes([0] * 4)
+            unknown_bytes = bytes([184, 88, 247, 233])
 
         return unknown_bytes
 
@@ -478,8 +580,8 @@ class PAMFeature(object):
 
     @staticmethod
     def header_bytes_to_class(header_bytes):
-        if header_bytes == RectanglePAMFeature.header_bytes:
-            return RectanglePAMFeature
+        if header_bytes == PolygonPAMFeature.header_bytes:
+            return PolygonPAMFeature
         elif header_bytes == EmptyPAMFeature.header_bytes:
             return EmptyPAMFeature
         elif header_bytes == InvertPAMFeature.header_bytes:
@@ -493,67 +595,68 @@ class PAMFeature(object):
         return bytes().join(byte_list)
 
 
-class RectanglePAMFeature(PAMFeature):
+class PolygonPAMFeature(PAMFeature):
     header_bytes = bytes([1, 0, 0, 16])
     separator_bytes = bytes([0, 64, 0, 0])
     footer_bytes = bytes([0, 1, 1, 129])
 
-    def __init__(self, top_left_point=None, size=None):
+    def __init__(self, points=None):
         super().__init__()
-        self.top_left_point = top_left_point
-        self.size = size
+        if points is not None:
+            self.points = []
 
     def __bytes__(self):
-        tail_bytes = self.tail_bytes
-        tail_len_bytes = uint32_to_bytes(len(tail_bytes))
-        return self.header_bytes + tail_len_bytes + tail_bytes
+        tail_len_bytes = uint32_to_bytes(len(self.tail_bytes))
+        return self.header_bytes + tail_len_bytes + self.tail_bytes
+
+    @property
+    def tail_bytes(self):
+        tail_bytes_list = (
+            [PAMSlice.separator_bytes,
+             uint32_to_bytes(self.num_points),
+             self.separator_bytes]
+            + [self.point_to_bytes(x) for x in self.points]
+            + ([self.footer_bytes] if self.num_points > 0 else []))
+        return bytes().join(tail_bytes_list)
 
     def __repr__(self):
-        top_left_point_repr = (None if self.top_left_point is None else
-                               self.top_left_point.tolist())
-        size_repr = (None if self.size is None else
-                     self.size.tolist())
-        return '''{:s}(top_left_point={}, size={})'''.format(
+        points_repr = repr([np.array(x).to_list() for x in self.points])
+        return '''{:s}(points={:s})'''.format(
             self.__class__.__name__,
-            top_left_point_repr,
-            size_repr)
+            points_repr)
 
     @classmethod
     def from_binary(cls, _, tail_bytes):
         tokens = cls._lex_binary(tail_bytes)
 
-        # FIXME - some of this should be moved to a PolygonPAMFeature class
         _next_token = tokens.pop(0)
         assert _next_token.type == TokenType.UINT_32, \
-            f'Error while parsing binary. Expected next token to be UINT_32.'
+            f'Error while parsing binary. Expected next token to be UINT_32,' \
+            f'got {_next_token.type} instead.'
         num_points = _next_token.value
 
-        if num_points == 4:
-            point_list = []
-            for _ in range(num_points):
-                _next_token = tokens.pop(0)
-                assert _next_token.type == TokenType.UINT_16
-                x_val = _next_token.value
+        point_list = []
+        for _ in range(num_points):
+            _next_token = tokens.pop(0)
+            assert _next_token.type == TokenType.UINT_16
+            x_val = _next_token.value
 
-                _next_token = tokens.pop(0)
-                assert _next_token.type == TokenType.UINT_16
-                y_val = _next_token.value
+            _next_token = tokens.pop(0)
+            assert _next_token.type == TokenType.UINT_16
+            y_val = _next_token.value
 
-                point_list.append(np.array([x_val, y_val]))
+            point_list.append(np.array([x_val, y_val]))
 
-            # TODO - add validity checks for rectangle
-
+        if cls.check_rect_points(point_list):
             top_left = point_list[0]
             size = point_list[2] - top_left
 
             if (size == [1, 1]).all():
                 return PointPAMFeature(point=top_left)
             else:
-                return cls(top_left_point=top_left, size=size)
+                return RectanglePAMFeature(top_left_point=top_left, size=size)
         else:
-            print(f'Parsing failed. Expected 4 points, but got {num_points} '
-                  f'points instead. Returning general PAMFeature instance.')
-            return PAMFeature(cls.header_bytes, tail_bytes)
+            return cls(points=point_list)
 
     @classmethod
     def _lex_binary(cls, byts):
@@ -563,8 +666,8 @@ class RectanglePAMFeature(PAMFeature):
         _next_len = pop_uint32(byte_arr)
         err_header = 'Error while lexing binary to generate tokens for a ' \
                      'PAMFeature.'
-        assert len(byte_arr) == _next_len, err_header + \
-            f'Expected len of {_next_len:d} bytes; found len of '\
+        assert len(byte_arr) == _next_len, \
+            err_header + f'Expected len of {_next_len:d} bytes; found len of ' \
             f'{len(byte_arr):d} bytes instead.'
 
         _next_word = pop_word(byte_arr)
@@ -574,9 +677,10 @@ class RectanglePAMFeature(PAMFeature):
         tokens.append(Token(TokenType.UINT_32, _next_len))
 
         _next_word = pop_word(byte_arr)
-        assert _next_word == cls.separator_bytes, err_header + \
-            f'Expected next bytes to be {[b for b in cls.separator_bytes]}; ' \
-            f'instead got {[b for b in _next_word]}.'
+        assert _next_word == cls.separator_bytes, \
+            err_header + f'Expected next bytes to be ' \
+            f'{bytes_to_int_arr(cls.separator_bytes)}; instead got ' \
+            f'{bytes_to_int_arr(_next_word)}.'
 
         for _ in range(_next_len):
             tokens += [Token(TokenType.UINT_16, pop_uint16(byte_arr))
@@ -588,11 +692,52 @@ class RectanglePAMFeature(PAMFeature):
         elif len(_next_word) == 0:
             pass
         else:
-            # FIXME - use function for byte arr conversion
             raise AssertionError(f'Expected end of binary, however bytes '
-                                 f'remain: {[b for b in byte_arr]}.')
+                                 f'remain: {bytes_to_int_arr(byte_arr)}.')
 
         return tokens
+
+    @classmethod
+    def check_rect_points(cls, points):
+        try:
+            assert len(points) == 4
+
+            top_left = points[0]
+            bottom_right = points[2]
+            size = bottom_right - top_left
+
+            assert np.all(size > 0)
+            assert np.all(np.equal(top_left + (size * np.array([1, 0])),
+                                   points[1]))
+            assert np.all(np.equal(top_left + (size * np.array([0, 1])),
+                                   points[3]))
+        except AssertionError:
+            return False
+        else:
+            return True
+
+    @property
+    def num_points(self):
+        return len(self.points)
+
+
+
+class RectanglePAMFeature(PolygonPAMFeature):
+
+    def __init__(self, top_left_point=None, size=None):
+        super().__init__()
+        self.top_left_point = top_left_point
+        self.size = size
+
+    def __repr__(self):
+        top_left_point_repr = (None if self.top_left_point is None else
+                               self.top_left_point.tolist())
+        size_repr = (None if self.size is None else
+                     self.size.tolist())
+        return '''{:s}(top_left_point={}, size={})'''.format(
+            self.__class__.__name__,
+            top_left_point_repr,
+            size_repr)
 
     @property
     def size(self):
@@ -623,25 +768,11 @@ class RectanglePAMFeature(PAMFeature):
         return self.top_left_point + (self.size[1] * np.array([0, 1]))
 
     @property
-    def _all_points(self):
+    def points(self):
         return [self.top_left_point,
                 self.top_right_point,
                 self.bottom_right_point,
                 self.bottom_left_point]
-
-    @property
-    def num_points(self):
-        return len(self._all_points)
-
-    @property
-    def tail_bytes(self):
-        tail_bytes_list = (
-                [PAMSlice.separator_bytes,
-                 uint32_to_bytes(self.num_points),
-                 self.separator_bytes]
-                + [self.point_to_bytes(x) for x in self._all_points]
-                + [self.footer_bytes])
-        return bytes().join(tail_bytes_list)
 
 
 class PointPAMFeature(RectanglePAMFeature):
@@ -711,13 +842,13 @@ def gen_test():
                                               size=[5, 2]),
                           RectanglePAMFeature(top_left_point=[10, 1],
                                               size=[6, 1])])])
-    filepath = os.path.join('data', 'gentest_z_mask_08.pam')
+    filepath = os.path.join('data', 'gentest_z_mask_08_v2.pam')
     pam.write_binary(filepath)
 
     pam = PAM(name='gentest_mask_11',
               shape=(256, 256, 1))
-    x = np.arange(32, 64)
-    y = np.arange(128, 225)
+    x = np.arange(32, 42)
+    y = np.arange(128, 158)
     features = []
     for x_val in x:
         for y_val in y:
@@ -725,7 +856,7 @@ def gen_test():
 
     pam.slices.append(PAMSlice(features=features))
 
-    filepath = os.path.join('data', 'gentest_mask_11.pam')
+    filepath = os.path.join('data', 'gentest_mask_13.pam')
     pam.write_binary(filepath)
 
     print(pam)
@@ -742,25 +873,50 @@ def main():
     filepath = os.path.join('data', 'gen_test.pam')
     pam.write_binary(filepath)
 
-    filepath = os.path.join('data', 'test_z_mask_08.pam')
+    filepath = os.path.join('data', 'test_z_mask_07.pam')
     with open(filepath, 'rb') as fle:
         byts = fle.read()
 
-    pam_2 = PAM.from_file(filepath)
-    print(pam_2)
+    pam = PAM.from_file(filepath)
+    print(pam)
+    if type(pam) is PAMList:
+        pam_2 = pam[1]
+    else:
+        pam_2 = pam
 
     read_bytes = np.array([b for b in byts])
-    print('\nRead Bytes:')
+    print(f'\nRead Bytes ({len(read_bytes)}):')
     print(read_bytes)
 
-    gen_bytes = np.array([b for b in bytes(pam_2)])
-    print('\nGenerated Bytes:')
+    gen_bytes = np.array([b for b in bytes(pam)])
+    print(f'\nGenerated Bytes ({len(gen_bytes)}):')
     print(gen_bytes)
 
-    print(f'\nNumber of differences = '
-          f'{np.sum(np.logical_not(read_bytes == gen_bytes))}')
+    # zipped_bytes = []
+    # for i in range(max(len(read_bytes), len(gen_bytes))):
+    #     if i < len(read_bytes):
+    #         a = read_bytes[i]
+    #     else:
+    #         a = None
+    #
+    #     if i < len(gen_bytes):
+    #         b = gen_bytes[i]
+    #     else:
+    #         b = None
+    #
+    #     zipped_bytes.append((a, b))
+    #
+    # print(zipped_bytes)
+
+    try:
+        diff = np.logical_not(np.equal(read_bytes, gen_bytes))
+    except ValueError:
+        print('\nBytes are different, could not be directly compared.')
+    else:
+        print(f'\nNumber of differences = {np.sum(diff)}')
 
     results_dict = {
+        'len': [],
         'x': [],
         'y': [],
         'xor': [],
@@ -777,7 +933,7 @@ def main():
         while y_copy:
             y_chunk.append(pop_word(y_copy))
 
-        y_xor = ft.reduce(bytes_xor, y_chunk)
+        y_xor = ft.reduce(bytes_or, y_chunk)
         y_xor_2 = bytes_xor(y_xor, x)
         y_sum = ft.reduce(bytes_sum, y_chunk)
         y_sum_2 = bytes_sum(y_sum, x)
@@ -788,16 +944,50 @@ def main():
         results_dict['xor_2'].append(y_xor_2)
         results_dict['sum'].append(y_sum)
         results_dict['sum_2'].append(y_sum_2)
+        results_dict['len'].append(len(y))
 
-    print(f'\nunknown bytes')
+        print(f'\n\nx = {bytes_to_binary_str(x)}')
+        print(f'y = ')
+        [print('    ' + bytes_to_binary_str(c)) for c in y_chunk]
+
+        print(f'\n\nx = {bytes_to_hex_str(x)}')
+        print(f'y = {bytes_to_hex_str(y)}')
+
+
+    print(f'\nunknown bytes (as int)')
+    [print(bytes_to_uint(x)) for x in results_dict['x']]
+
+    print(f'\nunknown bytes (as two floats)')
+    [print([bytes_to_float(x[:2]), bytes_to_float(x[2:])])
+     for x in results_dict['x']]
+
+    print(f'\nunknown bytes (as float)')
+    [print(bytes_to_float(x)) for x in results_dict['x']]
+
+    print(f'\nunknown bytes (as binary str)')
     [print(bytes_to_binary_str(x)) for x in results_dict['x']]
 
-    print(f'\nunknown bytes (as floats)')
-    [print(struct.unpack('f', x)[0]) for x in results_dict['x']]
+    print(f'\nunknown bytes (as int arr)')
+    [print(bytes_to_int_arr(x)) for x in results_dict['x']]
 
-    # print(f'\nXOR reduction')
-    # [print(bytes_to_binary_str(x)) for x in results_dict['xor']]
-    #
+    print(f'\nunknown bytes (as int diff)')
+    [print(bytes_to_uint(x) - bytes_to_uint(bytes([14, 129, 0, 108])))
+     for x in results_dict['x']]
+
+    print(f'\nunknown bytes (as hex)')
+    [print(bytes_to_hex_str(x)) for x in results_dict['x']]
+
+    # print(f'\nunknown bytes')
+    # [print(bytes_to_int_arr(x)) for x in results_dict['x']]
+
+    # print(f'\nunknown bytes xored with empty')
+    # [print(bytes_to_int_arr(bytes_xor(x, bytes([14, 129, 0, 108]))))
+    #  for x in results_dict['x']]
+
+
+    print(f'\nXOR reduction')
+    [print(bytes_to_binary_str(x)) for x in results_dict['xor']]
+
     # print(f'\nXOR reduction XOR\'d with unknown')
     # [print(bytes_to_binary_str(x)) for x in results_dict['xor_2']]
 
@@ -809,7 +999,8 @@ def main():
 
     gen_test()
 
-
+    # [243, 235, 216, 136]
+    # [184, 88, 247, 233]
 
 
 if __name__ == '__main__':
