@@ -33,7 +33,7 @@ def bytes_to_binary_str(byts):
     return ' '.join(format(b, '08b') for b in byts)
 
 
-def bytes_to_hex_str(byts):
+def bytes_to_hex(byts):
     return byts.hex()
 
 
@@ -90,7 +90,7 @@ def uint_to_bytes(x,
                   byteorder=default_byteorder,
                   allow_overflow=False):
     assert isint(x)  # TODO - add message
-    assert x >= 0  # TODO - add message
+    # assert x >= 0  # TODO - add message
 
     x_prime = x % ((2 ** 8) ** length) if allow_overflow else x
 
@@ -378,10 +378,10 @@ class PAMSlice(object):
     end_of_features_bytes = bytes([0] * 4)
     separator_bytes = bytes([1, 16, 192, 219])
 
-    def __init__(self, features=None):
+    def __init__(self, features=None, _unknown_bytes=None):
         self.features = [] if features is None else features
 
-        self._unknown_bytes_raw = None
+        self._unknown_bytes_raw = _unknown_bytes
         self._tail_bytes_raw = None
 
     def __bytes__(self):
@@ -820,7 +820,7 @@ class InvertPAMFeature(PAMFeature):
 
 
 def gen_test():
-    pam = PAM(name='gentest_z_mask_08',
+    pam = PAM(name='gentest_z_mask_08_v2',
               shape=(128, 128, 5),
               slices=[
                   PAMSlice(
@@ -842,10 +842,39 @@ def gen_test():
                                               size=[5, 2]),
                           RectanglePAMFeature(top_left_point=[10, 1],
                                               size=[6, 1])])])
-    filepath = os.path.join('data', 'gentest_z_mask_08_v2.pam')
+
+    pam = PAM(name='gentest_z_mask_08_v3',
+              shape=(128, 128, 5),
+              slices=[
+                  PAMSlice(
+                      features=[
+                          EmptyPAMFeature()],
+                      _unknown_bytes=bytes([14, 129, 0, 108])),
+                  PAMSlice(
+                      features=[
+                          EmptyPAMFeature()],
+                      _unknown_bytes=bytes([14, 129, 0, 108])),
+                  PAMSlice(
+                      features=[
+                          PointPAMFeature(point=[0, 0])],
+                      _unknown_bytes=bytes([184, 88, 247, 233])),
+                  PAMSlice(
+                      features=[
+                          RectanglePAMFeature(top_left_point=[0, 0],
+                                              size=[2, 1])],
+                      _unknown_bytes=bytes([186, 62, 161, 183])),
+                  PAMSlice(
+                      features=[
+                          RectanglePAMFeature(top_left_point=[1, 0],
+                                              size=[5, 2]),
+                          RectanglePAMFeature(top_left_point=[10, 1],
+                                              size=[6, 1])],
+                      _unknown_bytes=bytes([244, 159, 103, 118]))])
+
+    filepath = os.path.join('data', 'gentest_z_mask_08_v2 (128, 128, 5).pam')
     pam.write_binary(filepath)
 
-    pam = PAM(name='gentest_mask_11',
+    pam = PAM(name='gentest_mask_11_v2',
               shape=(256, 256, 1))
     x = np.arange(32, 42)
     y = np.arange(128, 158)
@@ -856,10 +885,38 @@ def gen_test():
 
     pam.slices.append(PAMSlice(features=features))
 
-    filepath = os.path.join('data', 'gentest_mask_13.pam')
+    filepath = os.path.join('data', 'gentest_mask_11_v2 (256, 256, 1).pam')
     pam.write_binary(filepath)
 
-    print(pam)
+    # print(pam)
+
+
+def create_training_data():
+    training_data = {'x': [], 'y': [], 'x_sum': []}
+    for i in [7, 8, 9, 10, 12]:
+
+        filepath = os.path.join('data', f'test_z_mask_{i:02d}.pam')
+        pams = PAMList.from_file(filepath)
+
+        for pam in pams:
+            for slce in pam.slices:
+                y = slce._unknown_bytes_raw
+                if bytes_to_hex(y) in training_data['y']:
+                    continue
+                else:
+                    x = slce._tail_bytes_raw
+                    x_copy = bytearray(x)
+                    x_chunk = []
+                    while x_copy:
+                        x_chunk.append(pop_word(x_copy))
+
+                    x_sum = ft.reduce(bytes_sum, x_chunk)
+
+                    training_data['x'].append(bytes_to_hex(x))
+                    training_data['y'].append(bytes_to_hex(y))
+                    training_data['x_sum'].append(bytes_to_hex(x_sum))
+
+    return training_data
 
 
 def main():
@@ -873,7 +930,7 @@ def main():
     filepath = os.path.join('data', 'gen_test.pam')
     pam.write_binary(filepath)
 
-    filepath = os.path.join('data', 'test_z_mask_07.pam')
+    filepath = os.path.join('data', 'test_z_mask_08.pam')
     with open(filepath, 'rb') as fle:
         byts = fle.read()
 
@@ -946,12 +1003,11 @@ def main():
         results_dict['sum_2'].append(y_sum_2)
         results_dict['len'].append(len(y))
 
-        print(f'\n\nx = {bytes_to_binary_str(x)}')
-        print(f'y = ')
-        [print('    ' + bytes_to_binary_str(c)) for c in y_chunk]
+        print(f'\n\nx = {bytes_to_hex(x)}')
+        print(f'y = {bytes_to_hex(y)}')
 
-        print(f'\n\nx = {bytes_to_hex_str(x)}')
-        print(f'y = {bytes_to_hex_str(y)}')
+        print(f'\n\nx     = {bytes_to_binary_str(x)}')
+        print(f'y_sum = {bytes_to_binary_str(y_sum)}')
 
 
     print(f'\nunknown bytes (as int)')
@@ -975,7 +1031,7 @@ def main():
      for x in results_dict['x']]
 
     print(f'\nunknown bytes (as hex)')
-    [print(bytes_to_hex_str(x)) for x in results_dict['x']]
+    [print(bytes_to_uint(x)) for x in results_dict['x']]
 
     # print(f'\nunknown bytes')
     # [print(bytes_to_int_arr(x)) for x in results_dict['x']]
@@ -984,23 +1040,25 @@ def main():
     # [print(bytes_to_int_arr(bytes_xor(x, bytes([14, 129, 0, 108]))))
     #  for x in results_dict['x']]
 
-
-    print(f'\nXOR reduction')
-    [print(bytes_to_binary_str(x)) for x in results_dict['xor']]
+    # print(f'\nXOR reduction')
+    # [print(bytes_to_binary_str(x)) for x in results_dict['xor']]
 
     # print(f'\nXOR reduction XOR\'d with unknown')
     # [print(bytes_to_binary_str(x)) for x in results_dict['xor_2']]
 
     print(f'\nSUM reduction')
-    [print(bytes_to_binary_str(x)) for x in results_dict['sum']]
+    [print(bytes_to_uint(x)) for x in results_dict['sum']]
 
     # print(f'\nSUM reduction SUM\'d with unknown')
-    # [print(bytes_to_binary_str(x)) for x in results_dict['sum_2']]
+    # [print(bytes_to_hex_str(x)) for x in results_dict['sum_2']]
 
     gen_test()
 
     # [243, 235, 216, 136]
     # [184, 88, 247, 233]
+
+    training_data = create_training_data()
+    print(training_data)
 
 
 if __name__ == '__main__':
