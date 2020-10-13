@@ -843,6 +843,9 @@ def gen_test():
                           RectanglePAMFeature(top_left_point=[10, 1],
                                               size=[6, 1])])])
 
+    filepath = os.path.join('data', 'gentest_z_mask_08_v2 (128, 128, 5).pam')
+    pam.write_binary(filepath)
+
     pam = PAM(name='gentest_z_mask_08_v3',
               shape=(128, 128, 5),
               slices=[
@@ -871,7 +874,7 @@ def gen_test():
                                               size=[6, 1])],
                       _unknown_bytes=bytes([244, 159, 103, 118]))])
 
-    filepath = os.path.join('data', 'gentest_z_mask_08_v2 (128, 128, 5).pam')
+    filepath = os.path.join('data', 'gentest_z_mask_08_v3 (128, 128, 5).pam')
     pam.write_binary(filepath)
 
     pam = PAM(name='gentest_mask_11_v2',
