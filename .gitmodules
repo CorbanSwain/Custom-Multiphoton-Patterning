@@ -1,0 +1,3 @@
+[submodule "c_swain_python_utils"]
+	path = c_swain_python_utils
+	url = https://github.com/CorbanSwain/Python-Utils
