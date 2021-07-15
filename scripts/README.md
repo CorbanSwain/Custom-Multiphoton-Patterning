@@ -4,7 +4,7 @@
 * In Prarie View, navigate to Tools -> Actions...
 * Click the "Photoactivation" tab.
 * Add a new action, for example:
-  * Name: "From Clipboard"
-  * Script: `{batch directory}\pa_from_clipboard.bat`.
+  * Name: `From Clipboard`
+  * Filename: `{batch directory}\pa_from_clipboard.bat`.
   * Arguments: `<outfile>`
   
