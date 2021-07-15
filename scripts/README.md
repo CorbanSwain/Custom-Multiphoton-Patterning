@@ -5,5 +5,6 @@
 * Click the "Photoactivation" tab.
 * Add a new action, for example:
   * Name: "From Clipboard"
-  * Script: {batch directory}/pa_from_clipboard.bat.
-  * Arguments: <outfile>
+  * Script: `{batch directory}\pa_from_clipboard.bat`.
+  * Arguments: `<outfile>`
+  
