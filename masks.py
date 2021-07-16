@@ -50,7 +50,7 @@ class Mask(object):
 
                 for a_loc, rowlike in rowlike_iter:
                     if a_loc % 100 == 99:
-                        print('> > Analyzing mask at {:s} {:5d}'.format(
+                        print('> > Analyzing mask at {:s} {:6,d}'.format(
                             'row' if dim_priority == 0 else 'column',
                             a_loc + 1))
                     start_idxs = np.where(np.diff(np.append(0, rowlike)))[0]
@@ -112,8 +112,8 @@ class Mask(object):
             chunk_lists.append(chunk_list)
 
         print('Done chunking.')
-        print('Mask decomposed into %d chunks.' %
-              sum([len(cl.chunks) for cl in chunk_lists]))
+        print('Mask decomposed into {:,d} chunks.'.format(
+              sum([len(cl.chunks) for cl in chunk_lists])))
         return chunk_lists
 
     @property
@@ -162,7 +162,7 @@ class Mask(object):
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
 
-        print('Will save mask files in directory "%s".' % save_dir)
+        print('Will save mask file(s) in directory "%s".' % save_dir)
 
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
