@@ -148,7 +148,8 @@ class Mask(object):
     def write_command_files(self,
                             save_dir,
                             chunk_list_kwargs=None,
-                            pam_command_kwargs=None):
+                            pam_command_kwargs=None,
+                            do_optimize_file_size=True):
 
         print('Creating photoactivation mask file(s) for import into '
               'Prairie View.')
@@ -156,7 +157,53 @@ class Mask(object):
         chunk_list_kwargs = chunk_list_kwargs or dict()
         pam_command_kwargs = pam_command_kwargs or dict()
 
-        chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
+        if do_optimize_file_size:
+            print('Optimizing file size by testing different chunking '
+                  'methods.')
+
+            from itertools import product
+
+            if self.mask_data.dtype == 'bool':
+                invert_list = [True, False]
+            else:
+                invert_list = [False]
+
+            dim_priority_list = ['x', 'y']
+
+            trial_iterator = product(invert_list, dim_priority_list)
+            n_trials = len(invert_list) * len(dim_priority_list)
+
+            best_size = None
+
+            for i, (do_invert, dim_priority) in enumerate(trial_iterator):
+                print('METHOD %d of %d: do_invert=%s, dim_priority="%s"'
+                      % (i + 1,
+                         n_trials,
+                         'True' if do_invert else 'False',
+                         dim_priority))
+                if do_invert:
+                    tmp_mask = Mask(np.logical_not(self.mask_data))
+                else:
+                    tmp_mask = self
+
+                tmp_chunk_lists = tmp_mask.create_chunk_lists(
+                    do_points_only=False,
+                    dim_priority=dim_priority,
+                    do_group_chunks=True)
+
+                full_size = sum([len(cl.chunks) for cl in tmp_chunk_lists])
+
+                if best_size is None or full_size < best_size:
+                    best_size = full_size
+                    did_invert = do_invert
+                    chunk_lists = tmp_chunk_lists
+                print('\n')
+
+            print('BEST SIZE found to be {:,d} chunks.'.format(best_size))
+
+        else:
+            chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
+
         size_str = 'size={:d}x{:d}'.format(*self.mask_data.shape[:2])
 
         csutils.touchdir(save_dir)
@@ -164,18 +211,25 @@ class Mask(object):
 
         print('Will save mask file(s) in directory "%s".' % save_dir)
 
+        if did_invert:
+            invert_flag = 'INVERTED_'
+        else:
+            invert_flag = ''
+
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
+
             z_index = i + 1
 
             if type(cmd_like) is dict:
                 for title, cmd_str in cmd_like.items():
-                    file_name = f'{size_str}_z={z_index:03d}_{title}_pam.txt'
+                    file_name = f'{size_str}_z={z_index:03d}_{invert_flag}' \
+                                f'{title}_pam.txt'
                     with open(make_path(file_name), 'w') as f:
                         f.write(cmd_str)
             else:
                 cmd_str = cmd_like
-                file_name = f'{size_str}_z={z_index:03d}_pam.txt'
+                file_name = f'{size_str}_z={z_index:03d}_{invert_flag}pam.txt'
                 with open(make_path(file_name), 'w') as f:
                     f.write(cmd_str)
 
@@ -389,13 +443,12 @@ class Chunk(object):
 
 
 def main():
-    filename = 'a14r9.tiff'
+    filename = 'm77.png'
     im_path = os.path.join('data', filename)
-    mask = Mask.from_image(im_path)
+    mask = Mask.from_image(im_path, to_binary=True)
     mask.write_command_files(
         os.path.join('data', 'generated_masks', filename + '_commands'),
-        chunk_list_kwargs=dict(dim_priority='x',
-                               do_group_chunks=True))
+        do_optimize_file_size=True)
 
 
 if __name__ == '__main__':
