@@ -12,12 +12,20 @@ class Mask(object):
     def __init__(self, mask_data=None):
         self.mask_data = mask_data
 
-    def create_chunk_lists(self, do_points_only=False):
+    def create_chunk_lists(self,
+                           do_points_only=False,
+                           dim_priority='x',
+                           do_group_chunks=True):
+        print('Chunking mask file into rectangular regions ...')
+
         chunk_lists = []
 
         tot_y_size, tot_x_size, z_size = self.mask_data.shape
 
         for z_loc in range(z_size):
+            print('> Analyzing mask at z-slice %3d of %3d'
+                  % (z_loc + 1, z_size))
+
             zslice = self.mask_data[:, :, z_loc]
             chunk_list = ChunkList()
 
@@ -31,26 +39,81 @@ class Mask(object):
                         value=self.mask_data[x_loc, y_loc, z_loc])
                     chunk_list.append(new_chunk)
             else:
-                for y_loc, row in enumerate(zslice):
-                    start_idxs = np.where(np.diff(np.append(0, row)))[0]
-                    end_idxs = np.where(np.diff(np.append(row, 0)))[0] + 1
-                    widths = end_idxs - start_idxs
-                    region_vals = row[start_idxs]
-                    filt = np.logical_not(region_vals == 0)
-                    iterator = zip(start_idxs[filt],
-                                   widths[filt],
-                                   region_vals[filt])
+                if dim_priority == 'y' or dim_priority == 1:
+                    dim_priority = 1
+                    rowlike_iter = enumerate(zslice.T)
+                elif dim_priority == 'x' or dim_priority == 0:
+                    dim_priority = 0
+                    rowlike_iter = enumerate(zslice)
+                else:
+                    raise ValueError('Unexpected dim_priority passed.')
 
-                    for x_loc, x_size, val in iterator:
+                for a_loc, rowlike in rowlike_iter:
+                    if a_loc % 100 == 99:
+                        print('> > Analyzing mask at {:s} {:5d}'.format(
+                            'row' if dim_priority == 0 else 'column',
+                            a_loc + 1))
+                    start_idxs = np.where(np.diff(np.append(0, rowlike)))[0]
+                    end_idxs = np.where(np.diff(np.append(rowlike, 0)))[0] + 1
+                    widths = end_idxs - start_idxs
+                    region_vals = rowlike[start_idxs]
+                    filt = np.logical_not(region_vals == 0)
+                    region_iter = zip(start_idxs[filt],
+                                      widths[filt],
+                                      region_vals[filt])
+
+                    if do_group_chunks:
+                        current_row_chunk_dict = dict()
+
+                    for b_loc, b_size, val in region_iter:
+
+                        if dim_priority == 1:
+                            xy_loc = (a_loc, b_loc)
+                            xy_size = (1, b_size)
+                        else:
+                            xy_loc = (b_loc, a_loc)
+                            xy_size = (b_size, 1)
+
                         new_chunk = Chunk(
-                            xy_loc=(x_loc, y_loc),
-                            xy_size=(x_size, 1),
+                            xy_loc=xy_loc,
+                            xy_size=xy_size,
                             total_xy_size=(tot_x_size, tot_y_size),
                             value=val)
-                        chunk_list.append(new_chunk)
+
+                        do_append = True
+
+                        if do_group_chunks:
+                            if a_loc > 0 and b_loc in previous_row_chunk_dict:
+                                chunk = previous_row_chunk_dict[b_loc]
+                                new_chk_adj = chunk.adjacency(new_chunk)
+
+                                if dim_priority == 0 \
+                                        and new_chk_adj == 'below':
+                                    chunk.xy_size = (chunk.xy_size[0],
+                                                     chunk.xy_size[1] + 1)
+                                    new_chunk = chunk
+                                    do_append = False
+                                elif dim_priority == 1 \
+                                        and new_chk_adj == 'right':
+                                    chunk.xy_size = (chunk.xy_size[0] + 1,
+                                                     chunk.xy_size[1])
+                                    new_chunk = chunk
+                                    do_append = False
+
+                            current_row_chunk_dict[b_loc] = new_chunk
+
+                        if do_append:
+                            chunk_list.append(new_chunk)
+
+                    if do_group_chunks:
+                        previous_row_chunk_dict = current_row_chunk_dict
+
 
             chunk_lists.append(chunk_list)
 
+        print('Done chunking.')
+        print('Mask decomposed into %d chunks.' %
+              sum([len(cl.chunks) for cl in chunk_lists]))
         return chunk_lists
 
     @property
@@ -87,6 +150,9 @@ class Mask(object):
                             chunk_list_kwargs=None,
                             pam_command_kwargs=None):
 
+        print('Creating photoactivation mask file(s) for import into '
+              'Prairie View.')
+
         chunk_list_kwargs = chunk_list_kwargs or dict()
         pam_command_kwargs = pam_command_kwargs or dict()
 
@@ -95,6 +161,8 @@ class Mask(object):
 
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
+
+        print('Will save mask files in directory "%s".' % save_dir)
 
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
@@ -187,14 +255,26 @@ class Chunk(object):
         self.value = value
         self.label = label
 
+        self.inset_subpixel_width = 1e-1
+
+    @property
+    def _n_decimals(self):
+        return int(np.ceil(np.log10(np.max(
+            self.total_xy_size, keepdims=False) / self.inset_subpixel_width)))
+
     @property
     def hull_points_relative(self):
         total_size = np.array(self.total_xy_size)
-        inset_subpixel_width = 5e-3
-        top_left = (np.array(self.xy_loc) + inset_subpixel_width) / total_size
-        size = ((np.array(self.xy_size) - (2 * inset_subpixel_width))
+        isw = self.inset_subpixel_width
+
+        top_left = (np.array(self.xy_loc) + isw) / total_size
+        size = ((np.array(self.xy_size) - (2 * isw))
                 / total_size)
         bottom_right = top_left + size
+
+        top_left = np.round(top_left, self._n_decimals)
+        bottom_right = np.round(bottom_right, self._n_decimals)
+
         top_right = (bottom_right[0], top_left[1])
         bottom_left = (top_left[0], bottom_right[1])
 
@@ -202,6 +282,39 @@ class Chunk(object):
                 top_right,
                 tuple(bottom_right.tolist()),
                 bottom_left]
+
+    @property
+    def hull_points(self):
+        xy_size = self.xy_size
+        top_left = self.xy_loc
+        bottom_right = (top_left[0] + xy_size[0],
+                        top_left[1] + xy_size[1])
+        top_right = (bottom_right[0], top_left[1])
+        bottom_left = (top_left[0], bottom_right[1])
+
+        return [top_left,
+                top_right,
+                bottom_right,
+                bottom_left]
+
+    @property
+    def top_left(self):
+        return self.xy_loc
+
+    @property
+    def top_right(self):
+        return (self.xy_loc[0] + self.xy_size[0],
+                self.xy_loc[1])
+
+    @property
+    def bottom_right(self):
+        return (self.xy_loc[0] + self.xy_size[0],
+                self.xy_loc[1] + self.xy_size[1])
+
+    @property
+    def bottom_left(self):
+        return (self.xy_loc[0],
+                self.xy_loc[1] + self.xy_size[1])
 
     def pam_command(self, label=None, label_to_id=None):
         label = self.label if label is None else label
@@ -212,17 +325,77 @@ class Chunk(object):
 
         id_int_str = f'{(-1 * id_int):d}'
 
-        return ', '.join([f'{x:.6f}'
+        return ', '.join(['%.*f' % (self._n_decimals, x)
                           for point in self.hull_points_relative
                           for x in point]
                          + [id_int_str])
 
+    def adjacency(self, other, epsilon=1e-9):
+        adj_result, do_reverse_eval = self._adjacency_helper(other,
+                                                             epsilon=epsilon)
+
+        if do_reverse_eval:
+            assert adj_result is None, 'Unexpected condition met.'
+
+            adj_result, _ = other._adjacency_helper(self,
+                                                    epsilon=epsilon)
+            if adj_result == 'above':
+                return 'below'
+            if adj_result == 'right':
+                return 'left'
+            else:
+                return adj_result
+        else:
+            return adj_result
+
+    def _adjacency_helper(self, other, epsilon):
+        def _eq(a, b):
+            # a = np.array(a)
+            # b = np.array(b)
+            # return np.all(np.abs(a - b) < epsilon)
+            return a == b
+
+        def _peq(a, b):
+            return a[0] == b[0] and a[1] == b[1]
+
+        if _eq(self.value, other.value):
+            above_check = (_peq(self.top_left, other.bottom_left)
+                           and _peq(self.top_right, other.bottom_right))
+            if above_check:
+                return 'above', False
+
+            right_check = (_peq(self.top_right, other.top_left)
+                           and _peq(self.bottom_right, other.bottom_left))
+            if right_check:
+                return 'right', False
+
+            return None, True
+        else:
+            return None, False
+
+    def __repr__(self):
+        return '''{:s}(
+    xy_loc=({:s}), 
+    xy_size=({:s}), 
+    total_xy_size=({:s}), 
+    value={:f}, 
+    label={:s})'''.format(
+            self.__class__.__name__,
+            ', '.join('{:d}'.format(x) for x in self.xy_loc),
+            ', '.join('{:d}'.format(x) for x in self.xy_size),
+            ', '.join('{:d}'.format(x) for x in self.total_xy_size),
+            self.value,
+            'None' if self.label is None else self.label)
+
 
 def main():
-    im_path = os.path.join('data', 'test_mask_55.png')
+    filename = 'a14r9.tiff'
+    im_path = os.path.join('data', filename)
     mask = Mask.from_image(im_path)
     mask.write_command_files(
-        os.path.join('data', 'generated_masks', 'mask_55_gen_07'))
+        os.path.join('data', 'generated_masks', filename + '_commands'),
+        chunk_list_kwargs=dict(dim_priority='x',
+                               do_group_chunks=True))
 
 
 if __name__ == '__main__':
