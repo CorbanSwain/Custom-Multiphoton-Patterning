@@ -53,8 +53,9 @@ class Mask(object):
                         print('> > Analyzing mask at {:s} {:6,d}'.format(
                             'row' if dim_priority == 0 else 'column',
                             a_loc + 1))
-                    start_idxs = np.where(np.diff(np.append(0, rowlike)))[0]
-                    end_idxs = np.where(np.diff(np.append(rowlike, 0)))[0] + 1
+                    ref_idxs = np.where(np.diff(rowlike))[0] + 1
+                    start_idxs = np.append(0, ref_idxs)
+                    end_idxs = np.append(ref_idxs, len(rowlike))                  
                     widths = end_idxs - start_idxs
                     region_vals = rowlike[start_idxs]
                     filt = np.logical_not(region_vals == 0)
