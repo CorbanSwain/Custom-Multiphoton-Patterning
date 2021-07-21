@@ -6,6 +6,7 @@ import imageio
 import c_swain_python_utils as csutils
 import functools as ft
 import os
+from math import ceil
 
 
 class Mask(object):
@@ -55,7 +56,7 @@ class Mask(object):
                             a_loc + 1))
                     ref_idxs = np.where(np.diff(rowlike))[0] + 1
                     start_idxs = np.append(0, ref_idxs)
-                    end_idxs = np.append(ref_idxs, len(rowlike))                  
+                    end_idxs = np.append(ref_idxs, rowlike.shape[0])
                     widths = end_idxs - start_idxs
                     region_vals = rowlike[start_idxs]
                     filt = np.logical_not(region_vals == 0)
@@ -129,10 +130,10 @@ class Mask(object):
         elif x_np.ndim == 3:
             self._mask_data = x_np
         else:
-            raise NotImplementedError('Mask data must be 2D or 3D')
+            raise NotImplementedError('Mask data must be 2D or 3D.')
 
     @classmethod
-    def from_image(cls, im_path, to_float=False, to_binary=False):
+    def from_image(cls, im_path, to_float=False, to_binary=True):
         im_data = imageio.imread(im_path)
 
         mask_data = None
@@ -150,7 +151,12 @@ class Mask(object):
                             save_dir,
                             chunk_list_kwargs=None,
                             pam_command_kwargs=None,
-                            do_optimize_file_size=True):
+                            do_optimize_file_size=True,
+                            do_split_files=True,
+                            file_split_size_mb=0.25):
+
+        if do_split_files:
+            file_split_size = file_split_size_mb * 1e6
 
         print('Creating photoactivation mask file(s) for import into '
               'Prairie View.')
@@ -226,13 +232,63 @@ class Mask(object):
                 for title, cmd_str in cmd_like.items():
                     file_name = f'{size_str}_z={z_index:03d}_{invert_flag}' \
                                 f'{title}_pam.txt'
+                    file_path = os.path.getsize(file_name)
                     with open(make_path(file_name), 'w') as f:
                         f.write(cmd_str)
+
+                    if do_split_files:
+                        split_file(file_path, file_split_size)
             else:
                 cmd_str = cmd_like
                 file_name = f'{size_str}_z={z_index:03d}_{invert_flag}pam.txt'
+                file_path = make_path(file_name)
                 with open(make_path(file_name), 'w') as f:
                     f.write(cmd_str)
+
+                if do_split_files:
+                    split_file(file_path, file_split_size)
+
+
+def split_file(pth, max_size):
+    full_file_size = os.path.getsize(pth)
+    num_outfiles = ceil(full_file_size / max_size)
+
+    max_size_mb = max_size / 1e6
+
+    if num_outfiles > 1:
+
+        print('Splitting output file into %d files of approx %.2f MB.'
+              % (num_outfiles, max_size_mb))
+
+        with open(pth, 'r') as ref_file:
+            ref_file_lines = ref_file.readlines()
+
+        n_ref_file_lines = len(ref_file_lines)
+        lines_per_file = n_ref_file_lines // num_outfiles
+        tmp_total_lines = lines_per_file * num_outfiles
+        n_last_file_lines = (lines_per_file
+                             + (n_ref_file_lines - tmp_total_lines))
+        split_lens = (([lines_per_file,] * (num_outfiles - 1))
+                      + [n_last_file_lines,])
+
+        split_dir = pth + (' SPLIT (at %.2f MB)' % max_size_mb)
+        csutils.touchdir(split_dir)
+
+        _, _tail = os.path.split(pth)
+        path_fmt = split_dir + os.sep + '{:03d}.txt'
+
+        start_idx = 0
+        for i_file, file_len in enumerate(split_lens):
+            end_idx = start_idx + file_len
+            file_lines = ref_file_lines[start_idx:end_idx]
+            with open(path_fmt.format(i_file + 1), 'w') as f:
+                f.writelines(file_lines)
+            start_idx = end_idx
+
+    else:
+        print('No file splitting performed since the input file is under the '
+              '%.2f MB limit.' % max_size_mb)
+
 
 
 class ChunkList(object):
@@ -262,7 +318,8 @@ class ChunkList(object):
     def pam_command(self,
                     label_to_id=None,
                     split_values=False,
-                    build_up_values=False):
+                    build_up_values=False,
+                    command_join_str=',\n'):
         if split_values or build_up_values:
             assert split_values ^ build_up_values, \
                 ('Only one of `split_values` and `build_up_values` can be set '
@@ -293,24 +350,25 @@ class ChunkList(object):
                 for i, d in enumerate(deltas):
                     commands = [chunk_list_command_map[v]
                                 for v in values[i:]]
-                    command = ', '.join(commands)
+                    command = command_join_str.join(commands)
                     output_dict[f'layer={i:03d}_delta={d:+03d}'] = command
 
             return output_dict
 
         else:
-            return ', '.join(c.pam_command(**kwargs) for c in self)
+            return command_join_str.join(c.pam_command(**kwargs)
+                                         for c in self)
 
 
 class Chunk(object):
+    inset_subpixel_width = 2e-1
+
     def __init__(self, xy_loc, xy_size, total_xy_size, value=1, label=None):
         self.xy_loc = xy_loc
         self.xy_size = xy_size
         self.total_xy_size = total_xy_size
         self.value = value
         self.label = label
-
-        self.inset_subpixel_width = 1e-1
 
     @property
     def _n_decimals(self):
@@ -444,7 +502,7 @@ class Chunk(object):
 
 
 def main():
-    filename = 'm77.png'
+    filename = 'a14r9.tiff'
     im_path = os.path.join('data', filename)
     mask = Mask.from_image(im_path, to_binary=True)
     mask.write_command_files(
