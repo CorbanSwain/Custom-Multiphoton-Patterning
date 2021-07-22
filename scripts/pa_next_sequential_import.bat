@@ -1,5 +1,5 @@
-<# : pa_begin_sequential_import.bat
-:: Begins sequential import of masks into PrarieView
+<# : pa_next_sequential_import.bat
+:: Continues sequential import of masks into PrarieView
 
 @echo off
 setlocal EnableDelayedExpansion
