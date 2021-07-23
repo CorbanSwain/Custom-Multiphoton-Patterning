@@ -6,6 +6,7 @@ import imageio
 import c_swain_python_utils as csutils
 import functools as ft
 import os
+import re
 from math import ceil
 
 
@@ -47,7 +48,7 @@ class Mask(object):
                     dim_priority = 0
                     rowlike_iter = enumerate(zslice)
                 else:
-                    raise ValueError('Unexpected dim_priority passed.')
+                    raise ValueError('Unexpected `dim_priority` passed.')
 
                 for a_loc, rowlike in rowlike_iter:
                     if a_loc % 100 == 99:
@@ -69,12 +70,12 @@ class Mask(object):
 
                     for b_loc, b_size, val in region_iter:
 
-                        if dim_priority == 1:
-                            xy_loc = (a_loc, b_loc)
-                            xy_size = (1, b_size)
-                        else:
+                        if dim_priority == 0:
                             xy_loc = (b_loc, a_loc)
                             xy_size = (b_size, 1)
+                        else:
+                            xy_loc = (a_loc, b_loc)
+                            xy_size = (1, b_size)
 
                         new_chunk = Chunk(
                             xy_loc=xy_loc,
@@ -109,7 +110,6 @@ class Mask(object):
 
                     if do_group_chunks:
                         previous_row_chunk_dict = current_row_chunk_dict
-
 
             chunk_lists.append(chunk_list)
 
@@ -147,6 +147,35 @@ class Mask(object):
 
         return cls(mask_data)
 
+    @classmethod
+    def from_command_file(cls,
+                          file_path,
+                          image_size,
+                          pallete_value_dict=None):
+        with open(file_path, 'r') as f:
+            file_lines = f.readlines()
+
+        file_text = ''.join(file_lines)
+        clean_text = re.sub(r'\s+', '', file_text, flags=re.UNICODE)
+        tokens = clean_text.split(',')
+
+        image_size = np.array(image_size)
+
+        chunks = []
+        current_chunk = []
+        for t in tokens:
+            float_t = float(t)
+            if float_t < 0:
+                points = np.array(current_chunk)
+                points = points.reshape((-1, 2)) * image_size
+                chunks.append((points, -1 * int(t)))
+                current_chunk = []
+            else:
+                current_chunk.append(float_t)
+
+        for i, c in enumerate(chunks):
+            print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
+
     def write_command_files(self,
                             save_dir,
                             chunk_list_kwargs=None,
@@ -171,7 +200,7 @@ class Mask(object):
             from itertools import product
 
             if self.mask_data.dtype == 'bool':
-                invert_list = [True, False]
+                invert_list = [False, True]
             else:
                 invert_list = [False]
 
@@ -186,7 +215,7 @@ class Mask(object):
                 print('METHOD %d of %d: do_invert=%s, dim_priority="%s"'
                       % (i + 1,
                          n_trials,
-                         'True' if do_invert else 'False',
+                         do_invert,
                          dim_priority))
                 if do_invert:
                     tmp_mask = Mask(np.logical_not(self.mask_data))
@@ -201,12 +230,14 @@ class Mask(object):
                 full_size = sum([len(cl.chunks) for cl in tmp_chunk_lists])
 
                 if best_size is None or full_size < best_size:
+                    best_method = i
                     best_size = full_size
                     did_invert = do_invert
                     chunk_lists = tmp_chunk_lists
                 print('\n')
 
-            print('BEST SIZE found to be {:,d} chunks.'.format(best_size))
+            print('BEST SIZE found to be {:,d} chunks with method # {:d}.'
+                  .format(best_size, best_method + 1))
 
         else:
             chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
@@ -285,10 +316,11 @@ def split_file(pth, max_size):
                 f.writelines(file_lines)
             start_idx = end_idx
 
+        assert start_idx == n_ref_file_lines, 'Unexpected error when splitting.'
+
     else:
         print('No file splitting performed since the input file is under the '
               '%.2f MB limit.' % max_size_mb)
-
 
 
 class ChunkList(object):
@@ -502,12 +534,18 @@ class Chunk(object):
 
 
 def main():
-    filename = 'a14r9.tiff'
+    filename = 'test_mask_55.png'
     im_path = os.path.join('data', filename)
     mask = Mask.from_image(im_path, to_binary=True)
-    mask.write_command_files(
-        os.path.join('data', 'generated_masks', filename + '_commands'),
-        do_optimize_file_size=True)
+    command_dir = os.path.join('data',
+                               'generated_masks',
+                               filename + '_commands')
+    mask.write_command_files(command_dir)
+
+    Mask.from_command_file(
+        os.path.join(command_dir,
+                     'size=1440x1440_z=001_INVERTED_pam.txt'),
+        (1440, 1440))
 
 
 if __name__ == '__main__':
