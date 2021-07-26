@@ -8,6 +8,7 @@ import functools as ft
 import os
 import re
 from math import ceil
+import matplotlib.pyplot as plt
 
 
 class Mask(object):
@@ -147,42 +148,14 @@ class Mask(object):
 
         return cls(mask_data)
 
-    @classmethod
-    def from_command_file(cls,
-                          file_path,
-                          image_size,
-                          pallete_value_dict=None):
-        with open(file_path, 'r') as f:
-            file_lines = f.readlines()
-
-        file_text = ''.join(file_lines)
-        clean_text = re.sub(r'\s+', '', file_text, flags=re.UNICODE)
-        tokens = clean_text.split(',')
-
-        image_size = np.array(image_size)
-
-        chunks = []
-        current_chunk = []
-        for t in tokens:
-            float_t = float(t)
-            if float_t < 0:
-                points = np.array(current_chunk)
-                points = points.reshape((-1, 2)) * image_size
-                chunks.append((points, -1 * int(t)))
-                current_chunk = []
-            else:
-                current_chunk.append(float_t)
-
-        for i, c in enumerate(chunks):
-            print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
-
     def write_command_files(self,
                             save_dir,
                             chunk_list_kwargs=None,
                             pam_command_kwargs=None,
                             do_optimize_file_size=True,
                             do_split_files=True,
-                            file_split_size_mb=0.25):
+                            file_split_size_mb=0.25,
+                            do_preview=True):
 
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
@@ -242,14 +215,14 @@ class Mask(object):
         else:
             chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
 
-        size_str = 'size={:d}x{:d}'.format(*self.mask_data.shape[:2])
+        size_str = 'size={1:d}x{0:d}'.format(*self.mask_data.shape[:2])
 
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
 
         print('Will save mask file(s) in directory "%s".' % save_dir)
 
-        if did_invert:
+        if do_optimize_file_size and did_invert:
             invert_flag = 'INVERTED_'
         else:
             invert_flag = ''
@@ -267,8 +240,16 @@ class Mask(object):
                     with open(make_path(file_name), 'w') as f:
                         f.write(cmd_str)
 
+                    if do_preview:
+                        preview_command_file(
+                            make_path(file_name),
+                            self.mask_data.shape[:2])
+
                     if do_split_files:
-                        split_file(file_path, file_split_size)
+                        split_file(file_path,
+                                   file_split_size,
+                                   preview_shape=(self.mask_data.shape[:2]
+                                                  if do_preview else None))
             else:
                 cmd_str = cmd_like
                 file_name = f'{size_str}_z={z_index:03d}_{invert_flag}pam.txt'
@@ -276,11 +257,19 @@ class Mask(object):
                 with open(make_path(file_name), 'w') as f:
                     f.write(cmd_str)
 
+                if do_preview:
+                    preview_command_file(
+                        make_path(file_name),
+                        self.mask_data.shape[:2])
+
                 if do_split_files:
-                    split_file(file_path, file_split_size)
+                    split_file(file_path,
+                               file_split_size,
+                               preview_shape=(self.mask_data.shape[:2]
+                                              if do_preview else None))
 
 
-def split_file(pth, max_size):
+def split_file(pth, max_size, preview_shape=None):
     full_file_size = os.path.getsize(pth)
     num_outfiles = ceil(full_file_size / max_size)
 
@@ -312,15 +301,110 @@ def split_file(pth, max_size):
         for i_file, file_len in enumerate(split_lens):
             end_idx = start_idx + file_len
             file_lines = ref_file_lines[start_idx:end_idx]
+            last_line = file_lines[-1]
+            if last_line.endswith(',\n'):
+                last_line = last_line[:-2] + '\n'
+            file_lines[-1] = last_line
             with open(path_fmt.format(i_file + 1), 'w') as f:
                 f.writelines(file_lines)
             start_idx = end_idx
+
+            if preview_shape is not None:
+                preview_command_file(
+                    path_fmt.format(i_file + 1),
+                    preview_shape)
 
         assert start_idx == n_ref_file_lines, 'Unexpected error when splitting.'
 
     else:
         print('No file splitting performed since the input file is under the '
               '%.2f MB limit.' % max_size_mb)
+
+
+def preview_command_file(file_path,
+                         image_size,
+                         verbose=False):
+    print('\nAttempting to preview command file "%s"' % file_path)
+
+    with open(file_path, 'r') as f:
+        file_lines = f.readlines()
+
+    figure_dir, filename = os.path.split(file_path)
+    figure_savename = '%s_preview' % filename
+    figure_name = 'PAM Command "%s" preview' % filename
+
+    file_text = ''.join(file_lines)
+    clean_text = re.sub(r'\s+', '', file_text, flags=re.UNICODE)
+    tokens = clean_text.split(',')
+
+    image_size = np.array(image_size)
+    xy_size = np.flip(image_size)
+
+    chunks = []
+    current_chunk = []
+    for t in tokens:
+        float_t = float(t)
+        if float_t < 0:
+            points = np.array(current_chunk)
+            points = points.reshape((-1, 2)) * xy_size
+            chunks.append((points, -1 * int(t)))
+            current_chunk = []
+        else:
+            current_chunk.append(float_t)
+
+    print_prd = ceil(len(chunks) / 2)
+    for i, c in enumerate(chunks):
+        if verbose or (i % print_prd) == (print_prd - 1):
+            print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
+
+    print('Creating Figure')
+    # csutils.set_mpl_defaults()
+    f = plt.figure(figsize=(10, 10))
+    ax = plt.gca()
+    ax.set_aspect('equal')
+    for i, c in enumerate(chunks):
+        point_list, label_int = c
+        x, y = (point_list[:, 0], point_list[:, 1])
+        plt.fill(x, y, 'c{:d}'.format(label_int),
+                 linestyle='-',
+                 linewidth=0.035,
+                 edgecolor='k')
+
+    ax.set_xticks(np.arange(0, image_size[1] + 1, 50), minor=False)
+    ax.set_yticks(np.arange(0, image_size[0] + 1, 50), minor=False)
+    ax.set_xticks(np.arange(0, image_size[1] + 1, 1), minor=True)
+    ax.set_yticks(np.arange(0, image_size[0] + 1, 1), minor=True)
+    ax.grid(True, 'major', 'both',
+            linestyle='-',
+            color='k',
+            linewidth=0.035,
+            alpha=0.6)
+    ax.grid(True, 'minor', 'both',
+            linestyle='-',
+            color='k',
+            linewidth=0.02,
+            alpha=0.25)
+
+    csutils.despine(ax, bottom=True, right=True)
+
+    ax.set_xlim([0, image_size[1]])
+    ax.set_ylim([0, image_size[0]])
+    ax.margins(0.1)
+    ax.invert_yaxis()
+    ax.xaxis.tick_top()
+
+    ax.spines['top'].set_position(('data', -5))
+    ax.spines['left'].set_position(('data', -5))
+
+    ax.set_title(figure_name)
+
+    plt.setp(ax.get_xticklabels(), rotation=-90, ha='center')
+
+    print('Saving Figure')
+    csutils.save_figures(
+        directory=figure_dir,
+        filename=figure_savename)
+    plt.close(f)
 
 
 class ChunkList(object):
@@ -534,18 +618,16 @@ class Chunk(object):
 
 
 def main():
-    filename = 'test_mask_55.png'
+    filename = 'a120r40.tiff'
     im_path = os.path.join('data', filename)
     mask = Mask.from_image(im_path, to_binary=True)
     command_dir = os.path.join('data',
                                'generated_masks',
                                filename + '_commands')
-    mask.write_command_files(command_dir)
-
-    Mask.from_command_file(
-        os.path.join(command_dir,
-                     'size=1440x1440_z=001_INVERTED_pam.txt'),
-        (1440, 1440))
+    mask.write_command_files(command_dir,
+                             do_optimize_file_size=False,
+                             chunk_list_kwargs=dict(dim_priority='x'),
+                             do_preview=True)
 
 
 if __name__ == '__main__':
