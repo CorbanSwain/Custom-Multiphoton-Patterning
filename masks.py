@@ -155,7 +155,8 @@ class Mask(object):
                             do_optimize_file_size=True,
                             do_split_files=True,
                             file_split_size_mb=0.25,
-                            do_preview=True):
+                            do_preview=True,
+                            do_allow_binary_inversion=False):
 
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
@@ -173,7 +174,10 @@ class Mask(object):
             from itertools import product
 
             if self.mask_data.dtype == 'bool':
-                invert_list = [False, True]
+                if do_allow_binary_inversion:
+                    invert_list = [False, True]
+                else:
+                    invert_list = [False]
             else:
                 invert_list = [False]
 
@@ -281,7 +285,21 @@ def split_file(pth, max_size, preview_shape=None):
               % (num_outfiles, max_size_mb))
 
         with open(pth, 'r') as ref_file:
-            ref_file_lines = ref_file.readlines()
+            ref_file_text = ref_file.read()
+
+        tokens = ref_file_text.split(',')
+        ref_file_lines = []
+        temp_line = ''
+        for t in tokens:
+            t = t.strip()
+            if temp_line == '':
+                temp_line = t
+                continue
+
+            temp_line = ','.join([temp_line, t])
+            if float(t) < 0:
+                ref_file_lines.append(temp_line + ',')
+                temp_line = ''
 
         n_ref_file_lines = len(ref_file_lines)
         lines_per_file = n_ref_file_lines // num_outfiles
@@ -302,11 +320,11 @@ def split_file(pth, max_size, preview_shape=None):
             end_idx = start_idx + file_len
             file_lines = ref_file_lines[start_idx:end_idx]
             last_line = file_lines[-1]
-            if last_line.endswith(',\n'):
-                last_line = last_line[:-2] + '\n'
+            if last_line.endswith(','):
+                last_line = last_line[:-1]
             file_lines[-1] = last_line
             with open(path_fmt.format(i_file + 1), 'w') as f:
-                f.writelines(file_lines)
+                f.write(''.join(file_lines))
             start_idx = end_idx
 
             if preview_shape is not None:
@@ -352,7 +370,7 @@ def preview_command_file(file_path,
         else:
             current_chunk.append(float_t)
 
-    print_prd = ceil(len(chunks) / 2)
+    print_prd = ceil(len(chunks) / 3)
     for i, c in enumerate(chunks):
         if verbose or (i % print_prd) == (print_prd - 1):
             print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
@@ -435,7 +453,7 @@ class ChunkList(object):
                     label_to_id=None,
                     split_values=False,
                     build_up_values=False,
-                    command_join_str=',\n'):
+                    command_join_str=', '):
         if split_values or build_up_values:
             assert split_values ^ build_up_values, \
                 ('Only one of `split_values` and `build_up_values` can be set '
@@ -618,16 +636,13 @@ class Chunk(object):
 
 
 def main():
-    filename = 'a120r40.tiff'
+    filename = 'a14r9.tiff'
     im_path = os.path.join('data', filename)
     mask = Mask.from_image(im_path, to_binary=True)
     command_dir = os.path.join('data',
                                'generated_masks',
                                filename + '_commands')
-    mask.write_command_files(command_dir,
-                             do_optimize_file_size=False,
-                             chunk_list_kwargs=dict(dim_priority='x'),
-                             do_preview=True)
+    mask.write_command_files(command_dir)
 
 
 if __name__ == '__main__':
