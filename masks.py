@@ -9,11 +9,17 @@ import os
 import re
 from math import ceil
 import matplotlib.pyplot as plt
+import pprint as pp
 
 
 class Mask(object):
-    def __init__(self, mask_data=None):
+    save_dir_tag = 'mask_outputs'
+
+    def __init__(self, mask_data=None, load_path=None):
         self.mask_data = mask_data
+        self.load_path = load_path
+
+        self._save_dir = None
 
     def create_chunk_lists(self,
                            do_points_only=False,
@@ -23,13 +29,12 @@ class Mask(object):
 
         chunk_lists = []
 
-        tot_y_size, tot_x_size, z_size = self.mask_data.shape
+        z_size, tot_y_size, tot_x_size = self.mask_data.shape
 
-        for z_loc in range(z_size):
+        for z_loc, zslice in enumerate(self.mask_data):
             print('> Analyzing mask at z-slice %3d of %3d'
                   % (z_loc + 1, z_size))
 
-            zslice = self.mask_data[:, :, z_loc]
             chunk_list = ChunkList()
 
             if do_points_only:
@@ -39,7 +44,7 @@ class Mask(object):
                         xy_loc=(x_loc, y_loc),
                         xy_size=(1, 1),
                         total_xy_size=(tot_x_size, tot_y_size),
-                        value=self.mask_data[x_loc, y_loc, z_loc])
+                        value=self.mask_data[z_loc, x_loc, y_loc])
                     chunk_list.append(new_chunk)
             else:
                 if dim_priority == 'y' or dim_priority == 1:
@@ -127,15 +132,29 @@ class Mask(object):
     def mask_data(self, x):
         x_np = np.array(x)
         if x_np.ndim == 2:
-            self._mask_data = x_np.reshape(x_np.shape + (1, ))
+            self._mask_data = x_np.reshape((1, ) + x_np.shape)
         elif x_np.ndim == 3:
             self._mask_data = x_np
         else:
             raise NotImplementedError('Mask data must be 2D or 3D.')
 
+    @property
+    def save_dir(self):
+        if self._save_dir is None:
+            if self.load_path is None:
+                return os.path.join('data', self.save_dir_tag)
+            else:
+                return '_'.join([self.load_path, self.save_dir_tag])
+        else:
+            return self._save_dir
+
+    @save_dir.setter
+    def save_dir(self, x):
+        self._save_dir = x
+
     @classmethod
-    def from_image(cls, im_path, to_float=False, to_binary=True):
-        im_data = imageio.imread(im_path)
+    def from_image(cls, im_path, to_float=False, to_binary=False):
+        im_data = imageio.volread(im_path)
 
         mask_data = None
 
@@ -146,17 +165,21 @@ class Mask(object):
 
         mask_data = im_data if mask_data is None else mask_data
 
-        return cls(mask_data)
+        print('Loaded image has shape: \n')
+        pp.pprint(mask_data.shape)
+
+        return cls(mask_data=mask_data, load_path=im_path)
 
     def write_command_files(self,
-                            save_dir,
+                            save_dir=None,
                             chunk_list_kwargs=None,
                             pam_command_kwargs=None,
                             do_optimize_file_size=True,
                             do_split_files=True,
                             file_split_size_mb=0.25,
                             do_preview=True,
-                            do_allow_binary_inversion=False):
+                            do_allow_binary_inversion=False,
+                            auto_set_label_to_id=True):
 
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
@@ -219,17 +242,55 @@ class Mask(object):
         else:
             chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
 
-        size_str = 'size={1:d}x{0:d}'.format(*self.mask_data.shape[:2])
+        size_str = 'size={1:d}x{0:d}'.format(*self.mask_data.shape[1:])
+
+        if save_dir is None:
+            save_dir = self.save_dir
 
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
 
-        print('Will save mask file(s) in directory "%s".' % save_dir)
+        print('Will save mask file(s) in directory "%s".\n' % save_dir)
 
         if do_optimize_file_size and did_invert:
             invert_flag = 'INVERTED_'
         else:
             invert_flag = ''
+
+        if auto_set_label_to_id:
+            chunk_value_set = set()
+            for cl in chunk_lists:
+                for c in cl:
+                    chunk_value_set.add(c.value)
+
+            chunk_value_list = sorted(chunk_value_set)
+            label_to_id = {v: (i + 1) for i, v in enumerate(chunk_value_list)}
+            if 'label_to_id' in pam_command_kwargs:
+                print('WARNING: overwriting `label_to_id` parameter in '
+                      '`pam_command_kwargs`.')
+
+            pam_command_kwargs['label_to_id'] = label_to_id
+
+            print('Auto-set `label_to_id` dict based on values of entire mask:')
+            pp.pp(label_to_id)
+
+            print('Writing file with conversion factors between palette '
+                  'indices and laser powers.')
+            firstlines = [f'Palette Conversion Table (generated at '
+                          f'{csutils.nowstr()})\n',
+                          '| Palette Index | Relative Laser Power | '
+                          'Mask Value |\n',
+                          f'| {"---":>13s} | {"---":>20s} | {"---":>10s} |\n']
+            image_vals = np.array(list(label_to_id.keys()))
+            image_vals = image_vals[image_vals > 0]
+            minval = min(image_vals)
+            lines = [f'| {v:13d} | {k / minval:20.3f} | {k:10.3f} |\n'
+                     for k, v in label_to_id.items()]
+            file_name = 'palette-power_conversion_table.txt'
+            file_path = make_path(file_name)
+            with open(file_path, 'w') as f:
+                f.writelines(firstlines + lines)
+            print(f'Wrote lookup table to "{file_path:s}".\n')
 
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
@@ -240,36 +301,38 @@ class Mask(object):
                 for title, cmd_str in cmd_like.items():
                     file_name = f'{size_str}_z={z_index:03d}_{invert_flag}' \
                                 f'{title}_pam.txt'
-                    file_path = os.path.getsize(file_name)
-                    with open(make_path(file_name), 'w') as f:
+                    file_path = make_path(file_name)
+                    print(file_path)
+                    with open(file_path, 'w') as f:
                         f.write(cmd_str)
 
                     if do_preview:
                         preview_command_file(
-                            make_path(file_name),
-                            self.mask_data.shape[:2])
+                            file_path,
+                            self.mask_data.shape[1:])
 
                     if do_split_files:
                         split_file(file_path,
                                    file_split_size,
-                                   preview_shape=(self.mask_data.shape[:2]
+                                   preview_shape=(self.mask_data.shape[1:]
                                                   if do_preview else None))
             else:
                 cmd_str = cmd_like
                 file_name = f'{size_str}_z={z_index:03d}_{invert_flag}pam.txt'
                 file_path = make_path(file_name)
-                with open(make_path(file_name), 'w') as f:
+                print(file_path)
+                with open(file_path, 'w') as f:
                     f.write(cmd_str)
 
                 if do_preview:
                     preview_command_file(
-                        make_path(file_name),
-                        self.mask_data.shape[:2])
+                        file_path,
+                        self.mask_data.shape[1:])
 
                 if do_split_files:
                     split_file(file_path,
                                file_split_size,
-                               preview_shape=(self.mask_data.shape[:2]
+                               preview_shape=(self.mask_data.shape[1:]
                                               if do_preview else None))
 
 
@@ -281,7 +344,7 @@ def split_file(pth, max_size, preview_shape=None):
 
     if num_outfiles > 1:
 
-        print('Splitting output file into %d files of approx %.2f MB.'
+        print('Splitting output file into %d files of approx %.2f MB.\n'
               % (num_outfiles, max_size_mb))
 
         with open(pth, 'r') as ref_file:
@@ -380,13 +443,18 @@ def preview_command_file(file_path,
     f = plt.figure(figsize=(10, 10))
     ax = plt.gca()
     ax.set_aspect('equal')
+    legend_handles = dict()
     for i, c in enumerate(chunks):
         point_list, label_int = c
         x, y = (point_list[:, 0], point_list[:, 1])
-        plt.fill(x, y, 'c{:d}'.format(label_int),
-                 linestyle='-',
-                 linewidth=0.035,
-                 edgecolor='k')
+        plt_handle, = ax.fill(x, y,
+                             facecolor='C{:d}'.format(label_int - 1),
+                             linestyle='-',
+                             linewidth=0.035,
+                             edgecolor='k')
+
+        legend_handles.setdefault(label_int, (plt_handle,
+                                              f'Palette Index {label_int:d}'))
 
     ax.set_xticks(np.arange(0, image_size[1] + 1, 50), minor=False)
     ax.set_yticks(np.arange(0, image_size[0] + 1, 50), minor=False)
@@ -413,6 +481,10 @@ def preview_command_file(file_path,
 
     ax.spines['top'].set_position(('data', -5))
     ax.spines['left'].set_position(('data', -5))
+
+    ax.legend(*zip(*legend_handles.values()),
+              loc='lower center',
+              ncol=5,)
 
     ax.set_title(figure_name)
 
@@ -446,51 +518,117 @@ class ChunkList(object):
             new_label = None
         return ChunkList(self.chunks + other.chunks, label=new_label)
 
+    def extend(self, _iter):
+        self.chunks.extend(_iter)
+
     def append(self, item):
         self.chunks.append(item)
 
     def pam_command(self,
                     label_to_id=None,
+                    auto_assign_chunk_labels=None,
                     split_values=False,
                     build_up_values=False,
-                    command_join_str=', '):
+                    command_join_str=','):
+
         if split_values or build_up_values:
             assert split_values ^ build_up_values, \
                 ('Only one of `split_values` and `build_up_values` can be set '
                  'to True.')
 
-        kwargs = {'label': self.label, 'label_to_id': label_to_id}
+        if auto_assign_chunk_labels is None:
+            auto_assign_chunk_labels = (False
+                                        if (split_values or build_up_values)
+                                        else True)
+
+        if auto_assign_chunk_labels:
+            label_to_id = dict() if label_to_id is None else label_to_id
+            next_id_int = 1
+            for c in self:
+                if c.value not in label_to_id:
+                    label_to_id_vals = label_to_id.values()
+                    while next_id_int in label_to_id_vals:
+                        next_id_int += 1
+                    label_to_id[c.value] = next_id_int
+
+                c.label = c.value
+            print('Auto-assigned chunk labels to be chunk values, and mapped '
+                  'labels to the following integer ids:')
+            pp.pprint(label_to_id)
+            print()
+
+        next_call_kwargs = {'label_to_id': label_to_id}
 
         if split_values or build_up_values:
+            print(
+                f'Creating a series of ChunkLists based on image vals and '
+                f'using method '
+                f'{"`split_values`" if split_values else "`build_up_values`"}.')
             chunk_list_map = dict()
             for c in self:
                 try:
                     chunk_list_map[c.value].append(c)
                 except KeyError:
-                    chunk_list_map[c.value] = ChunkList()
+                    new_list = ChunkList()
+                    chunk_list_map[c.value] = new_list
                     chunk_list_map[c.value].append(c)
 
-            chunk_list_command_map = {k: c.pam_command(**kwargs)
-                                      for k, c in chunk_list_map.items()}
+            chunklist_call_kwargs = next_call_kwargs
+            chunklist_call_kwargs['auto_assign_chunk_labels'] = False
 
             output_dict = dict()
             if split_values:
-                for val, command in chunk_list_command_map:
-                    output_dict[f'value={val:d}'] = command
+                _iterator = enumerate(chunk_list_map.items())
+                for i, (val, chunklist) in _iterator:
+                    chunklist.label = val
+                    command = chunklist.pam_command(**chunklist_call_kwargs)
+
+                    if round(val) == val:
+                        valstr = f'{val:04d}'
+                    else:
+                        valstr = f'{val:.3f}'
+
+                    output_dict[f'v_layer={i+1:03d}_value={valstr:s}'] = command
 
             elif build_up_values:
-                values = reversed(sorted(chunk_list_map.keys()))
+                values = list(sorted(chunk_list_map.keys()))
                 deltas = np.diff([0] + values)
-                for i, d in enumerate(deltas):
-                    commands = [chunk_list_command_map[v]
-                                for v in values[i:]]
-                    command = command_join_str.join(commands)
-                    output_dict[f'layer={i:03d}_delta={d:+03d}'] = command
 
+                if auto_assign_chunk_labels:
+                    new_label_to_id = [(d, (i + 1))
+                                       for i, d in enumerate(deltas)]
+                    print('Will overwrite previously auto-assigned labels with '
+                          'delta value-based labels [(delta, id_int), ...]:')
+                    pp.pprint(new_label_to_id)
+
+                for i, d in enumerate(deltas):
+                    chunklist = ChunkList(label=d)
+                    for v in values[i:]:
+                        chunklist.extend(chunk_list_map[v])
+
+                    if auto_assign_chunk_labels:
+                        chunklist_call_kwargs['label_to_id'] = dict(
+                            [new_label_to_id[i]])
+
+                    command = chunklist.pam_command(**chunklist_call_kwargs)
+
+                    if round(d) == d:
+                        valstr = f'{d:+04d}'
+                    else:
+                        valstr = f'{d:+.3f}'
+
+                    output_dict[f'd_layer={i+1:03d}_delta={valstr}'] = command
+
+            print('Multi ChunkList command generation complete.\n')
             return output_dict
 
         else:
-            return command_join_str.join(c.pam_command(**kwargs)
+            chunk_call_kwargs = next_call_kwargs
+            if not auto_assign_chunk_labels:
+                chunk_call_kwargs['label'] = self.label
+
+            print('> Generating ChunkList command string.')
+            return command_join_str.join(c.pam_command(**chunk_call_kwargs)
                                          for c in self)
 
 
@@ -563,19 +701,21 @@ class Chunk(object):
         return (self.xy_loc[0],
                 self.xy_loc[1] + self.xy_size[1])
 
-    def pam_command(self, label=None, label_to_id=None):
+    def pam_command(self,
+                    label=None,
+                    label_to_id=None,
+                    number_join_str=','):
         label = self.label if label is None else label
 
-        id_int = 1 if label is None else None
-        if id_int is None:
-            id_int = label_to_id[label]
+        id_int = (1 if label is None or label_to_id is None
+                  else label_to_id[label])
 
         id_int_str = f'{(-1 * id_int):d}'
 
-        return ', '.join(['%.*f' % (self._n_decimals, x)
-                          for point in self.hull_points_relative
-                          for x in point]
-                         + [id_int_str])
+        return number_join_str.join(['%.*f' % (self._n_decimals, x)
+                                     for point in self.hull_points_relative
+                                     for x in point]
+                                    + [id_int_str])
 
     def adjacency(self, other, epsilon=1e-9):
         adj_result, do_reverse_eval = self._adjacency_helper(other,
@@ -636,13 +776,10 @@ class Chunk(object):
 
 
 def main():
-    filename = 'a14r9.tiff'
-    im_path = os.path.join('data', filename)
-    mask = Mask.from_image(im_path, to_binary=True)
-    command_dir = os.path.join('data',
-                               'generated_masks',
-                               filename + '_commands')
-    mask.write_command_files(command_dir)
+    filename = 'test_3d.tif'
+    im_path = os.path.join('data', 'cheng_z', filename)
+    mask = Mask.from_image(im_path)
+    mask.write_command_files()
 
 
 if __name__ == '__main__':
