@@ -1,0 +1,13 @@
+he check for whether a commandline argument has been set can be [%1]==[], but, as Dave Costa points out, "%1"=="" will also work.
+
+I also fixed a syntax error in the usage echo to escape the greater-than and less-than signs. In addition, the exit needs a /B argument otherwise CMD.exe will quit.
+
+@echo off
+
+if [%1]==[] goto usage
+@echo This should not execute
+@echo Done.
+goto :eof
+:usage
+@echo Usage: %0 ^<EnvironmentName^>
+exit /B 1
