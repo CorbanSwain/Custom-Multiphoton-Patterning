@@ -1,0 +1,4 @@
+Palette Conversion Table (generated at 20220128-1612)
+| Palette Index | Relative Laser Power | Mask Value |
+|           --- |                  --- |        --- |
+|             1 |                1.000 |    255.000 |

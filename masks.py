@@ -154,7 +154,10 @@ class Mask(object):
 
     @classmethod
     def from_image(cls, im_path, to_float=False, to_binary=False):
-        im_data = imageio.volread(im_path)
+        try:
+            im_data = imageio.volread(im_path)
+        except ValueError:
+            im_data = imageio.imread(im_path)
 
         mask_data = None
 
@@ -179,7 +182,8 @@ class Mask(object):
                             file_split_size_mb=0.25,
                             do_preview=True,
                             do_allow_binary_inversion=False,
-                            auto_set_label_to_id=True):
+                            auto_set_label_to_id=True,
+                            max_num_output_values=8):
 
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
@@ -264,15 +268,35 @@ class Mask(object):
                     chunk_value_set.add(c.value)
 
             chunk_value_list = sorted(chunk_value_set)
-            label_to_id = {v: (i + 1) for i, v in enumerate(chunk_value_list)}
+            if len(chunk_value_list) > max_num_output_values:
+                print(f'Digitizing `Chunk` values to have only '
+                      f'{max_num_output_values:d} levels')
+                values_np = np.array(chunk_value_list)
+                bins = np.linspace(values_np[0], values_np[-1],
+                                   max_num_output_values)
+                values_digitized = np.digitize(values_np, bins)
+                id_to_value_dict = dict()
+                for i in range(max_num_output_values):
+                    id_int = i + 1
+                    id_to_value_dict[id_int] = np.median(
+                        values_np[values_digitized == id_int])
+
+                values_digitized = values_digitized.tolist()
+                label_to_id = {v: _id for v, _id in zip(chunk_value_list,
+                                                        values_digitized)}
+
+            else:
+                label_to_id = {v: (i + 1)
+                               for i, v in enumerate(chunk_value_list)}
+                id_to_value_dict = {v: k for k, v in label_to_id.items()}
+
             if 'label_to_id' in pam_command_kwargs:
                 print('WARNING: overwriting `label_to_id` parameter in '
                       '`pam_command_kwargs`.')
 
             pam_command_kwargs['label_to_id'] = label_to_id
 
-            print('Auto-set `label_to_id` dict based on values of entire mask:')
-            pp.pp(label_to_id)
+            print('Auto-set `label_to_id` dict based on values of entire mask.')
 
             print('Writing file with conversion factors between palette '
                   'indices and laser powers.')
@@ -281,16 +305,29 @@ class Mask(object):
                           '| Palette Index | Relative Laser Power | '
                           'Mask Value |\n',
                           f'| {"---":>13s} | {"---":>20s} | {"---":>10s} |\n']
-            image_vals = np.array(list(label_to_id.keys()))
-            image_vals = image_vals[image_vals > 0]
-            minval = min(image_vals)
-            lines = [f'| {v:13d} | {k / minval:20.3f} | {k:10.3f} |\n'
-                     for k, v in label_to_id.items()]
+
+            image_vals = np.array(list(id_to_value_dict.values()))
+            minval = min(image_vals[image_vals > 0])
+
+            lines = [f'| {k:13d} | {v / minval:20.3f} | {v:10.3f} |\n'
+                     for k, v in id_to_value_dict.items()]
+
             file_name = 'palette-power_conversion_table.txt'
             file_path = make_path(file_name)
+
             with open(file_path, 'w') as f:
                 f.writelines(firstlines + lines)
-            print(f'Wrote lookup table to "{file_path:s}".\n')
+
+            print(f'Wrote lookup table to "{file_path:s}":')
+            print(''.join(firstlines + lines))
+            print('\n')
+        else:
+            # TODO - Handle max output values when not auto-setting label to id.
+            #        Maybe need to pass param to the `cl.pam_command()`
+            #        function.
+            print('WARNING: **Not Implemented**, `max_num_output_values` '
+                  'parameter will be ignored since `auto_set_label_to_id` is '
+                  'False.')
 
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
@@ -494,7 +531,12 @@ def preview_command_file(file_path,
     csutils.save_figures(
         directory=figure_dir,
         filename=figure_savename)
-    plt.close(f)
+
+    if csutils.isnotebook():
+        print('Displaying preview figure in notebook output:')
+        plt.show()
+    else:
+        plt.close(f)
 
 
 class ChunkList(object):
@@ -553,8 +595,7 @@ class ChunkList(object):
 
                 c.label = c.value
             print('Auto-assigned chunk labels to be chunk values, and mapped '
-                  'labels to the following integer ids:')
-            pp.pprint(label_to_id)
+                  'labels to integer ids.')
             print()
 
         next_call_kwargs = {'label_to_id': label_to_id}
@@ -633,7 +674,7 @@ class ChunkList(object):
 
 
 class Chunk(object):
-    inset_subpixel_width = 2e-1
+    inset_subpixel_width = 1e-2
 
     def __init__(self, xy_loc, xy_size, total_xy_size, value=1, label=None):
         self.xy_loc = xy_loc
@@ -776,8 +817,8 @@ class Chunk(object):
 
 
 def main():
-    filename = 'test_3d.tif'
-    im_path = os.path.join('data', 'cheng_z', filename)
+    filename = 'test_2d_smile_grey.png'
+    im_path = os.path.join('data', 'examples', filename)
     mask = Mask.from_image(im_path)
     mask.write_command_files()
 
