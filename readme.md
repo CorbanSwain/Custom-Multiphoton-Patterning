@@ -6,13 +6,16 @@ them into mask files that can be imported into 2-photon imaging software
 
 
 ## Getting Started
-The easiest way to start will be to use Anaconda to setup a python environment.
-Then take use a jupyter notebook to load and run this conversion code. You can
+The easiest way to start will be to download this code, and use Anaconda 
+to setup a python environment.
+Then use a jupyter notebook to load and run the conversion code. You can
 do this via the following steps:
 
-1. Clone this repository into a folder (e.g. `.../cmp/`) on your 
-   computer. 
-   * *Note* after cloning this repository you will need to import the submodules
+1. Download a release or 
+   [clone](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) 
+   this repository into a folder (e.g. `.../cmp/`) on your computer. 
+   * [**Download the latest release here.**](https://github.com/CorbanSwain/Custom-Multiphoton-Patterning/releases/latest/download/cmp_0.2.1.zip)
+   * *Note*: If you clone this repository, you will need to import the submodules
      via the following commands:
      ```bash
      git submodule init
