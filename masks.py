@@ -1,5 +1,6 @@
 #!python3
 # masks.py
+import shutil
 
 import numpy as np
 import imageio
@@ -178,12 +179,13 @@ class Mask(object):
                             chunk_list_kwargs=None,
                             pam_command_kwargs=None,
                             do_optimize_file_size=True,
-                            do_split_files=True,
+                            do_split_files=False,
                             file_split_size_mb=0.25,
                             do_preview=True,
                             do_allow_binary_inversion=False,
                             auto_set_label_to_id=True,
-                            max_num_output_values=8):
+                            max_num_output_values=8,
+                            do_prepare_sequential_import=True):
 
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
@@ -329,12 +331,18 @@ class Mask(object):
                   'parameter will be ignored since `auto_set_label_to_id` is '
                   'False.')
 
+        file_paths = []
+
         for i, cl in enumerate(chunk_lists):
             cmd_like = cl.pam_command(**pam_command_kwargs)
 
             z_index = i + 1
 
             if type(cmd_like) is dict:
+                if do_prepare_sequential_import:
+                    print('NOT IMPLEMENTED: Cannot prepare sequential import.')
+                    do_prepare_sequential_import = False
+
                 for title, cmd_str in cmd_like.items():
                     file_name = f'{size_str}_z={z_index:03d}_{invert_flag}' \
                                 f'{title}_pam.txt'
@@ -371,6 +379,21 @@ class Mask(object):
                                file_split_size,
                                preview_shape=(self.mask_data.shape[1:]
                                               if do_preview else None))
+
+            file_paths.append((z_index, file_path))
+
+        if do_prepare_sequential_import:
+            print('Copying PAM files to subfolder to prepare for sequential '
+                  'z-stack import.')
+
+            seq_dir = make_path(f'SEQ_IMPORT_{size_str}x{len(file_paths)}_'
+                                f'{invert_flag}pams')
+            if os.path.exists(seq_dir):
+                shutil.rmtree(seq_dir)
+            csutils.touchdir(seq_dir)
+            for z_index, file_path in file_paths:
+                new_path = os.path.join(seq_dir, f'{z_index:03d}.txt')
+                shutil.copyfile(file_path, new_path)
 
 
 def split_file(pth, max_size, preview_shape=None):
