@@ -174,6 +174,7 @@ class Mask(object):
 
         return cls(mask_data=mask_data, load_path=im_path)
 
+    @csutils.timed()
     def write_command_files(self,
                             save_dir=None,
                             chunk_list_kwargs=None,
@@ -197,7 +198,7 @@ class Mask(object):
         pam_command_kwargs = pam_command_kwargs or dict()
 
         if do_optimize_file_size:
-            print('Optimizing file size by testing different chunking '
+            print('\nOptimizing file size by testing different chunking '
                   'methods.')
 
             from itertools import product
@@ -383,17 +384,20 @@ class Mask(object):
             file_paths.append((z_index, file_path))
 
         if do_prepare_sequential_import:
-            print('Copying PAM files to subfolder to prepare for sequential '
+            print('\nCopying PAM files to subfolder to prepare for sequential '
                   'z-stack import.')
 
             seq_dir = make_path(f'SEQ_IMPORT_{size_str}x{len(file_paths)}_'
                                 f'{invert_flag}pams')
+            print(f'Sequential import directory: "{seq_dir:s}"')
             if os.path.exists(seq_dir):
                 shutil.rmtree(seq_dir)
             csutils.touchdir(seq_dir)
             for z_index, file_path in file_paths:
                 new_path = os.path.join(seq_dir, f'{z_index:03d}.txt')
                 shutil.copyfile(file_path, new_path)
+
+        print('\nMask command file(s) generation complete!')
 
 
 def split_file(pth, max_size, preview_shape=None):
@@ -463,103 +467,121 @@ def split_file(pth, max_size, preview_shape=None):
 
 
 def preview_command_file(file_path,
-                         image_size,
+                         image_size=(1, 1),
                          verbose=False):
-    print('\nAttempting to preview command file "%s"' % file_path)
+    try:
+        print('\nAttempting to preview command file "%s"' % file_path)
 
-    with open(file_path, 'r') as f:
-        file_lines = f.readlines()
+        with open(file_path, 'r') as f:
+            file_lines = f.readlines()
 
-    figure_dir, filename = os.path.split(file_path)
-    figure_savename = '%s_preview' % filename
-    figure_name = 'PAM Command "%s" preview' % filename
+        figure_dir, filename = os.path.split(file_path)
+        figure_savename = '%s_preview' % filename
+        figure_name = 'PAM Command "%s" preview' % filename
 
-    file_text = ''.join(file_lines)
-    clean_text = re.sub(r'\s+', '', file_text, flags=re.UNICODE)
-    tokens = clean_text.split(',')
+        file_text = ''.join(file_lines)
+        clean_text = re.sub(r'\s+', '', file_text, flags=re.UNICODE)
+        tokens = clean_text.split(',')
 
-    image_size = np.array(image_size)
-    xy_size = np.flip(image_size)
+        # csutils.set_mpl_defaults()
+        f = plt.figure(figsize=(10, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal')
 
-    chunks = []
-    current_chunk = []
-    for t in tokens:
-        float_t = float(t)
-        if float_t < 0:
-            points = np.array(current_chunk)
-            points = points.reshape((-1, 2)) * xy_size
-            chunks.append((points, -1 * int(t)))
-            current_chunk = []
+        if len(tokens) <= 2:
+            print(f'Insufficient number of values ({len(tokens):d}) found in '
+                  f'command file to produce any mask shapes.')
+            plt.text(0.5, 0.5, '( Empty Mask File )',
+                     transform=ax.transAxes,
+                     ha='center',
+                     va='center',
+                     c='black',
+                     alpha=0.9,
+                     fontsize='x-large',
+                     fontweight='bold')
         else:
-            current_chunk.append(float_t)
+            image_size = np.array(image_size)
+            xy_size = np.flip(image_size)
 
-    print_prd = ceil(len(chunks) / 3)
-    for i, c in enumerate(chunks):
-        if verbose or (i % print_prd) == (print_prd - 1):
-            print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
+            chunks = []
+            current_chunk = []
+            for t in tokens:
+                float_t = float(t)
+                if float_t < 0:
+                    points = np.array(current_chunk)
+                    points = points.reshape((-1, 2)) * xy_size
+                    chunks.append((points, -1 * int(t)))
+                    current_chunk = []
+                else:
+                    current_chunk.append(float_t)
 
-    print('Creating Figure')
-    # csutils.set_mpl_defaults()
-    f = plt.figure(figsize=(10, 10))
-    ax = plt.gca()
-    ax.set_aspect('equal')
-    legend_handles = dict()
-    for i, c in enumerate(chunks):
-        point_list, label_int = c
-        x, y = (point_list[:, 0], point_list[:, 1])
-        plt_handle, = ax.fill(x, y,
-                             facecolor='C{:d}'.format(label_int - 1),
-                             linestyle='-',
-                             linewidth=0.035,
-                             edgecolor='k')
+            print_prd = ceil(len(chunks) / 3)
+            for i, c in enumerate(chunks):
+                if verbose or (i % print_prd) == (print_prd - 1):
+                    print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
 
-        legend_handles.setdefault(label_int, (plt_handle,
-                                              f'Palette Index {label_int:d}'))
+            print('Creating Figure')
+            legend_handles = dict()
+            for i, c in enumerate(chunks):
+                point_list, label_int = c
+                x, y = (point_list[:, 0], point_list[:, 1])
+                plt_handle, = ax.fill(x, y,
+                                     facecolor='C{:d}'.format(label_int - 1),
+                                     linestyle='-',
+                                     linewidth=0.035,
+                                     edgecolor='k')
 
-    ax.set_xticks(np.arange(0, image_size[1] + 1, 50), minor=False)
-    ax.set_yticks(np.arange(0, image_size[0] + 1, 50), minor=False)
-    ax.set_xticks(np.arange(0, image_size[1] + 1, 1), minor=True)
-    ax.set_yticks(np.arange(0, image_size[0] + 1, 1), minor=True)
-    ax.grid(True, 'major', 'both',
-            linestyle='-',
-            color='k',
-            linewidth=0.035,
-            alpha=0.6)
-    ax.grid(True, 'minor', 'both',
-            linestyle='-',
-            color='k',
-            linewidth=0.02,
-            alpha=0.25)
+                legend_handles.setdefault(label_int, (plt_handle,
+                                                      f'Palette Index '
+                                                      f'{label_int:d}'))
 
-    csutils.despine(ax, bottom=True, right=True)
+            ax.legend(*zip(*legend_handles.values()),
+                      loc='lower center',
+                      ncol=5,)
 
-    ax.set_xlim([0, image_size[1]])
-    ax.set_ylim([0, image_size[0]])
-    ax.margins(0.1)
-    ax.invert_yaxis()
-    ax.xaxis.tick_top()
+        ax.set_xticks(np.arange(0, image_size[1] + 1, 50), minor=False)
+        ax.set_yticks(np.arange(0, image_size[0] + 1, 50), minor=False)
+        ax.set_xticks(np.arange(0, image_size[1] + 1, 1), minor=True)
+        ax.set_yticks(np.arange(0, image_size[0] + 1, 1), minor=True)
+        ax.grid(True, 'major', 'both',
+                linestyle='-',
+                color='k',
+                linewidth=0.035,
+                alpha=0.6)
+        ax.grid(True, 'minor', 'both',
+                linestyle='-',
+                color='k',
+                linewidth=0.02,
+                alpha=0.25)
 
-    ax.spines['top'].set_position(('data', -5))
-    ax.spines['left'].set_position(('data', -5))
+        csutils.despine(ax, bottom=True, right=True)
 
-    ax.legend(*zip(*legend_handles.values()),
-              loc='lower center',
-              ncol=5,)
+        ax.set_xlim([0, image_size[1]])
+        ax.set_ylim([0, image_size[0]])
+        ax.margins(0.1)
+        ax.invert_yaxis()
+        ax.xaxis.tick_top()
 
-    ax.set_title(figure_name)
+        ax.spines['top'].set_position(('data', -5))
+        ax.spines['left'].set_position(('data', -5))
 
-    plt.setp(ax.get_xticklabels(), rotation=-90, ha='center')
+        ax.set_title(figure_name)
 
-    print('Saving Figure')
-    csutils.save_figures(
-        directory=figure_dir,
-        filename=figure_savename)
+        plt.setp(ax.get_xticklabels(), rotation=-90, ha='center')
 
-    if csutils.isnotebook():
-        print('Displaying preview figure in notebook output:')
-        plt.show()
-    else:
-        plt.close(f)
+        print('Saving Figure')
+        csutils.save_figures(
+            directory=figure_dir,
+            filename=figure_savename)
+
+        if csutils.isnotebook():
+            print('Displaying preview figure in notebook output:')
+            plt.show()
+        else:
+            plt.close(f)
+
+    except Exception as e:
+        print(f'Preview of command file failed with error: {e}')
 
 
 class ChunkList(object):
