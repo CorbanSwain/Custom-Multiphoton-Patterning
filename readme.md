@@ -36,6 +36,10 @@ do this via the following steps:
    ```bash
    conda env create --prefix ./env --file .env-explicit.txt
    ```
+1. Activate the anaconda enviornment by the following command
+   ```bash
+   conda activate ./env
+   ```
    
 1. Open a jupyter notebook by entering the following command
    ```bash
