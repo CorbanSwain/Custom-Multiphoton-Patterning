@@ -400,6 +400,55 @@ class Mask(object):
         print('\nMask command file(s) generation complete!')
 
 
+def shift_pixel_edges(x,
+                      axis=1,
+                      *,
+                      leading_edge_shift,
+                      falling_edge_shift,
+                      warn=True,
+                      verbose=False):
+    assert x.ndim == 2, 'Array must be exactly 2-dimensional'
+
+    transpose = axis == 0
+    if transpose:
+        x = x.T
+
+    # - Get All edges with diff
+    # - Arrange edges into big vector from all image rows
+    #
+
+    diff_arr = np.diff(x, axis=1)
+    le_index_tup = np.where(diff_arr > 0)  # leading edges
+    fe_index_tup = np.where(diff_arr < 0)  # falling edges
+    le_ri, le_ci = le_index_tup
+    fe_ri, fe_ci = fe_index_tup
+
+    for row in range(x.shape[0]):
+        le = le_ci[le_ri == row]
+        fe = le_ci[fe_ri == row]
+        all_e_raw = np.concatenate([le, fe])
+        if all_e_raw.size == 0:
+            continue
+        e_argsort = np.argsort(all_e_raw)
+        all_e = all_e_raw[e_argsort]
+
+    le_mask_raw = np.concatenate([np.ones(le.shape, dtype=bool),
+                                  np.ones(fe.shape, dtype=bool)])
+    le_mask = le_mask_raw[e_argsort]
+    fe_mask = np.logical_not(le_mask)
+
+    new_le = le + leading_edge_shift
+    new_fe = fe + falling_edge_shift
+
+    x_prime = np.array()
+
+    if transpose:
+        x_prime = x_prime.T
+    return x_prime
+
+
+
+
 def split_file(pth, max_size, preview_shape=None):
     full_file_size = os.path.getsize(pth)
     num_outfiles = ceil(full_file_size / max_size)
