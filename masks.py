@@ -176,27 +176,32 @@ class Mask(object):
 
         mask_data = im_data if mask_data is None else mask_data
 
-        log.info('Loaded image has shape: \n')
-        pp.pprint(mask_data.shape)
+        log.info('Loaded image data has shape: {}', mask_data.shape)
 
         return cls(mask_data=mask_data, load_path=im_path)
 
     def shift_pixel_edges(self,
                           rising_edge_shift,
                           falling_edge_shift,
+                          scan_axis=-1,
+                          do_plot_results=True,
                           **kwargs):
 
         if self._did_pixel_edge_shift:
             log.warning('Pixel edge shifting is being performed multiple'
                         ' times, further modifying the mask data; this is'
-                        ' not recommend and may cause unexpected results.'
+                        ' not recommend, and may cause unexpected results.'
                         ' Consider first reloading the mask, then applying'
-                        ' pixel edge shifts.')
+                        ' pixel edge shifts with this class method or manually'
+                        ' applying pixel edge shifts using the module function'
+                        ' prior to mask creation.')
 
         self.mask_data = shift_pixel_edges(
             self.mask_data,
+            scan_axis=scan_axis,
             rising_edge_shift=rising_edge_shift,
             falling_edge_shift=falling_edge_shift,
+            do_plot_results=do_plot_results,
             **kwargs)
 
         self._meta_str += (f'rise_shft={rising_edge_shift:+d}_'
@@ -480,6 +485,33 @@ def shift_pixel_edges(x,
                       warn=True,
                       reverse_scan_direction=False,
                       do_plot_results=True):
+
+    if (rising_edge_shift == 0) and (falling_edge_shift == 0):
+        return x
+
+    positive_expansion = falling_edge_shift - rising_edge_shift
+
+    if positive_expansion > 0:
+        trans_type_str = 'EXPAND'
+    elif positive_expansion < 0:
+        trans_type_str = 'CONTRACT'
+        positive_expansion = -positive_expansion
+    else:
+        trans_type_str = 'TRANSLATE'
+        positive_expansion = falling_edge_shift
+
+    log.info('Shifting the edges of the data along scan_axis {:d}, the'
+             ' transformation will {:s} positive-valued regions by'
+             ' approx {:d} pixels, shifting rising edges {:s} by {:d} pixels'
+             ' and falling edges {:s} by {:d} pixels.',
+             scan_axis,
+             trans_type_str,
+             positive_expansion,
+             'forward' if rising_edge_shift >= 0 else 'backward',
+             abs(rising_edge_shift),
+             'forward' if falling_edge_shift >= 0 else 'backward',
+             abs(falling_edge_shift))
+
     # move scan axis to the final axis
     x = np.moveaxis(x, scan_axis, -1)
     moveax_shape = x.shape
@@ -614,17 +646,20 @@ def shift_pixel_edges(x,
                 x_label_addn = ', Reversed'
             else:
                 x_label_addn = ''
+
             plt.xlim(x_lims)
             plt.ylim(np.flip(np.array(y_lims)))
-
             plt.xlabel(f'Scanline Position{x_label_addn} (pixel)')
             plt.ylabel('Scanline Index (a.u.)')
             plt.title('WARNING: The highlighted region(s) will'
-                      ' be lost when performing pixel shifts.',
+                      ' be lost\nwhen performing pixel edge shifts.',
                       color='r', fontweight='bold')
-            plt.legend(handles=[p])
+            plt.legend(handles=[p],
+                       bbox_to_anchor=(1.02, 1.00),
+                       loc='upper left')
             ax = plt.gca()
             ax.add_collection(hlpc)
+            plt.show()
 
     # compute the change from value to value across regions to classify the
     # edge type
@@ -638,7 +673,7 @@ def shift_pixel_edges(x,
     is_pos_shiftable[line_break_locs] = False
 
     # If the position is determined to be a rising edge AND can be
-    # validly shifted, then shift by the parametrized amount. Similarly
+    # validly shifted, then shift by the parametrized amount. Similarly,
     # for the falling edge.
     new_region_start_pos = region_start_pos.copy()
     rise_filt = is_pos_rising & is_pos_shiftable
@@ -706,14 +741,17 @@ def shift_pixel_edges(x,
                   vmax=1)
         ax.set_xlabel('Scanline Position (pixel)')
         ax.set_ylabel('Scanline Index (a.u.)')
-        ax.set_title(f'Result of pixel shift with changes highlighted\n'
+        ax.set_title(f'Result of pixel edge shift with changes highlighted\n'
                      f'(rising_edge_shift = {rising_edge_shift:+d},'
-                     f' falling_edge_shift = {falling_edge_shift:+d})')
-        p0 = mpl.patches.Patch(color=cmap(0.0), label='removed/decreased')
-        p1 = mpl.patches.Patch(color=cmap(1.0), label='added/increased')
+                     f' falling_edge_shift = {falling_edge_shift:+d})',
+                     fontweight='bold')
+        p0 = mpl.patches.Patch(color=cmap(0.0), label='removed\nor decreased')
+        p1 = mpl.patches.Patch(color=cmap(1.0), label='added\nor increased')
         ax.legend(handles=[p0, p1],
                   title='Changed Regions',
-                  framealpha=0.9)
+                  framealpha=1,
+                  bbox_to_anchor=(1.02, 1.00),
+                  loc='upper left')
         plt.show()
 
     x_prime = x_prime.reshape(moveax_shape)
