@@ -10,8 +10,13 @@ import os
 import re
 from math import ceil
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import pprint as pp
+import enum
 
+
+log = csutils.get_logger(__name__)
+csutils.apply_standard_logging_config(window_format='cli')
 
 class Mask(object):
     save_dir_tag = 'mask_outputs'
@@ -19,6 +24,8 @@ class Mask(object):
     def __init__(self, mask_data=None, load_path=None):
         self.mask_data = mask_data
         self.load_path = load_path
+        self._meta_str = ''
+        self._did_pixel_edge_shift = False
 
         self._save_dir = None
 
@@ -26,15 +33,15 @@ class Mask(object):
                            do_points_only=False,
                            dim_priority='x',
                            do_group_chunks=True):
-        print('Chunking mask file into rectangular regions ...')
+        log.info('Chunking mask file into rectangular regions ...')
 
         chunk_lists = []
 
         z_size, tot_y_size, tot_x_size = self.mask_data.shape
 
         for z_loc, zslice in enumerate(self.mask_data):
-            print('> Analyzing mask at z-slice %3d of %3d'
-                  % (z_loc + 1, z_size))
+            log.info('> Analyzing mask at z-slice {:3d} of {:3d}',
+                     z_loc + 1, z_size)
 
             chunk_list = ChunkList()
 
@@ -59,9 +66,9 @@ class Mask(object):
 
                 for a_loc, rowlike in rowlike_iter:
                     if a_loc % 100 == 99:
-                        print('> > Analyzing mask at {:s} {:6,d}'.format(
-                            'row' if dim_priority == 0 else 'column',
-                            a_loc + 1))
+                        log.info('> > Analyzing mask at {:s} {:6,d}',
+                                 'row' if dim_priority == 0 else 'column',
+                                 a_loc + 1)
                     ref_idxs = np.where(np.diff(rowlike))[0] + 1
                     start_idxs = np.append(0, ref_idxs)
                     end_idxs = np.append(ref_idxs, rowlike.shape[0])
@@ -120,9 +127,9 @@ class Mask(object):
 
             chunk_lists.append(chunk_list)
 
-        print('Done chunking.')
-        print('Mask decomposed into {:,d} chunks.'.format(
-              sum([len(cl.chunks) for cl in chunk_lists])))
+        log.info('Done chunking.')
+        log.info('Mask decomposed into {:,d} chunks.',
+                 sum([len(cl.chunks) for cl in chunk_lists]))
         return chunk_lists
 
     @property
@@ -169,12 +176,36 @@ class Mask(object):
 
         mask_data = im_data if mask_data is None else mask_data
 
-        print('Loaded image has shape: \n')
+        log.info('Loaded image has shape: \n')
         pp.pprint(mask_data.shape)
 
         return cls(mask_data=mask_data, load_path=im_path)
 
-    @csutils.timed()
+    def shift_pixel_edges(self,
+                          rising_edge_shift,
+                          falling_edge_shift,
+                          **kwargs):
+
+        if self._did_pixel_edge_shift:
+            log.warning('Pixel edge shifting is being performed multiple'
+                        ' times, further modifying the mask data; this is'
+                        ' not recommend and may cause unexpected results.'
+                        ' Consider first reloading the mask, then applying'
+                        ' pixel edge shifts.')
+
+        self.mask_data = shift_pixel_edges(
+            self.mask_data,
+            rising_edge_shift=rising_edge_shift,
+            falling_edge_shift=falling_edge_shift,
+            **kwargs)
+
+        self._meta_str += (f'rise_shft={rising_edge_shift:+d}_'
+                           f'fall_shft={falling_edge_shift:+d}_')
+        self._did_pixel_edge_shift = True
+
+
+
+    @csutils.timed(log)
     def write_command_files(self,
                             save_dir=None,
                             chunk_list_kwargs=None,
@@ -191,15 +222,15 @@ class Mask(object):
         if do_split_files:
             file_split_size = file_split_size_mb * 1e6
 
-        print('Creating photoactivation mask file(s) for import into '
-              'Prairie View.')
+        log.info('Creating photoactivation mask file(s) for import into '
+                 'Prairie View.')
 
         chunk_list_kwargs = chunk_list_kwargs or dict()
         pam_command_kwargs = pam_command_kwargs or dict()
 
         if do_optimize_file_size:
-            print('\nOptimizing file size by testing different chunking '
-                  'methods.')
+            log.info('\nOptimizing file size by testing different chunking '
+                     'methods.')
 
             from itertools import product
 
@@ -219,11 +250,12 @@ class Mask(object):
             best_size = None
 
             for i, (do_invert, dim_priority) in enumerate(trial_iterator):
-                print('METHOD %d of %d: do_invert=%s, dim_priority="%s"'
-                      % (i + 1,
+                log.info('METHOD {:d} of {:d}: do_invert={}, '
+                         'dim_priority="{}"',
+                         i + 1,
                          n_trials,
                          do_invert,
-                         dim_priority))
+                         dim_priority)
                 if do_invert:
                     tmp_mask = Mask(np.logical_not(self.mask_data))
                 else:
@@ -241,10 +273,10 @@ class Mask(object):
                     best_size = full_size
                     did_invert = do_invert
                     chunk_lists = tmp_chunk_lists
-                print('\n')
+                log.info('\n')
 
-            print('BEST SIZE found to be {:,d} chunks with method # {:d}.'
-                  .format(best_size, best_method + 1))
+            log.info('BEST SIZE found to be {:,d} chunks with method # {:d}.',
+                     best_size, best_method + 1)
 
         else:
             chunk_lists = self.create_chunk_lists(**chunk_list_kwargs)
@@ -257,7 +289,7 @@ class Mask(object):
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
 
-        print('Will save mask file(s) in directory "%s".\n' % save_dir)
+        log.info('Will save mask file(s) in directory "{:s}".\n', save_dir)
 
         if do_optimize_file_size and did_invert:
             invert_flag = 'INVERTED_'
@@ -272,8 +304,8 @@ class Mask(object):
 
             chunk_value_list = sorted(chunk_value_set)
             if len(chunk_value_list) > max_num_output_values:
-                print(f'Digitizing `Chunk` values to have only '
-                      f'{max_num_output_values:d} levels')
+                log.info('Digitizing `Chunk` values to have only '
+                         '{:d} levels', max_num_output_values)
                 values_np = np.array(chunk_value_list)
                 bins = np.linspace(values_np[0], values_np[-1],
                                    max_num_output_values)
@@ -294,15 +326,16 @@ class Mask(object):
                 id_to_value_dict = {v: k for k, v in label_to_id.items()}
 
             if 'label_to_id' in pam_command_kwargs:
-                print('WARNING: overwriting `label_to_id` parameter in '
-                      '`pam_command_kwargs`.')
+                log.warning('overwriting `label_to_id` parameter in '
+                            '`pam_command_kwargs`.')
 
             pam_command_kwargs['label_to_id'] = label_to_id
 
-            print('Auto-set `label_to_id` dict based on values of entire mask.')
+            log.info('Auto-set `label_to_id` dict based on values of entire '
+                     'mask.')
 
-            print('Writing file with conversion factors between palette '
-                  'indices and laser powers.')
+            log.info('Writing file with conversion factors between palette '
+                     'indices and laser powers.')
             firstlines = [f'Palette Conversion Table (generated at '
                           f'{csutils.nowstr()})\n',
                           '| Palette Index | Relative Laser Power | '
@@ -321,16 +354,17 @@ class Mask(object):
             with open(file_path, 'w') as f:
                 f.writelines(firstlines + lines)
 
-            print(f'Wrote lookup table to "{file_path:s}":')
-            print(''.join(firstlines + lines))
-            print('\n')
+            log.info('Wrote lookup table to "{:s}":', file_path)
+            log.info(''.join(firstlines + lines))
+            log.info('\n')
         else:
             # TODO - Handle max output values when not auto-setting label to id.
             #        Maybe need to pass param to the `cl.pam_command()`
             #        function.
-            print('WARNING: **Not Implemented**, `max_num_output_values` '
-                  'parameter will be ignored since `auto_set_label_to_id` is '
-                  'False.')
+            log.warning(
+                'WARNING: **Not Implemented**, `max_num_output_values` '
+                'parameter will be ignored since `auto_set_label_to_id` is '
+                'False.')
 
         file_paths = []
 
@@ -341,14 +375,16 @@ class Mask(object):
 
             if type(cmd_like) is dict:
                 if do_prepare_sequential_import:
-                    print('NOT IMPLEMENTED: Cannot prepare sequential import.')
+                    log.warning(
+                        'NOT IMPLEMENTED: Cannot prepare sequential import.')
                     do_prepare_sequential_import = False
 
                 for title, cmd_str in cmd_like.items():
-                    file_name = f'{size_str}_z={z_index:03d}_{invert_flag}' \
-                                f'{title}_pam.txt'
+                    file_name = (f'{size_str}_z={z_index:03d}_{invert_flag}'
+                                 f'{self._meta_str}'
+                                 f'{title}_pam.txt')
                     file_path = make_path(file_name)
-                    print(file_path)
+                    log.debug(file_path)
                     with open(file_path, 'w') as f:
                         f.write(cmd_str)
 
@@ -364,9 +400,10 @@ class Mask(object):
                                                   if do_preview else None))
             else:
                 cmd_str = cmd_like
-                file_name = f'{size_str}_z={z_index:03d}_{invert_flag}pam.txt'
+                file_name = (f'{size_str}_z={z_index:03d}_{invert_flag}'
+                             f'{self._meta_str}pam.txt')
                 file_path = make_path(file_name)
-                print(file_path)
+                log.info(file_path)
                 with open(file_path, 'w') as f:
                     f.write(cmd_str)
 
@@ -384,12 +421,13 @@ class Mask(object):
             file_paths.append((z_index, file_path))
 
         if do_prepare_sequential_import:
-            print('\nCopying PAM files to subfolder to prepare for sequential '
-                  'z-stack import.')
+            log.info(
+                '\nCopying PAM files to subfolder to prepare for sequential '
+                'z-stack import.')
 
             seq_dir = make_path(f'SEQ_IMPORT_{size_str}x{len(file_paths)}_'
-                                f'{invert_flag}pams')
-            print(f'Sequential import directory: "{seq_dir:s}"')
+                                f'{invert_flag}{self._meta_str}pams')
+            log.info('Sequential import directory: "{:s}"', seq_dir)
             if os.path.exists(seq_dir):
                 shutil.rmtree(seq_dir)
             csutils.touchdir(seq_dir)
@@ -397,54 +435,289 @@ class Mask(object):
                 new_path = os.path.join(seq_dir, f'{z_index:03d}.txt')
                 shutil.copyfile(file_path, new_path)
 
-        print('\nMask command file(s) generation complete!')
+        log.info('\nMask command file(s) generation complete!')
+
+
+class RegionType(enum.IntEnum):
+    NONE = 0
+    START_PLATEAU = enum.auto()
+    END_PLATEAU = enum.auto()
+    START_WELL = enum.auto()
+    END_WELL = enum.auto()
+    CENTER_PLATEAU = enum.auto()
+    CENTER_WELL = enum.auto()
+    CENTER_STEP = enum.auto()
+
+    @classmethod
+    def to_width_cutoff(cls, type_arr, rising_edge_shift, falling_edge_shift):
+        out_arr = np.zeros(type_arr.shape, dtype=int)
+        out_arr[type_arr == cls.START_PLATEAU] = -falling_edge_shift
+        out_arr[type_arr == cls.END_PLATEAU] = rising_edge_shift
+        out_arr[type_arr == cls.START_WELL] = -rising_edge_shift
+        out_arr[type_arr == cls.END_WELL] = falling_edge_shift
+        out_arr[type_arr == cls.CENTER_PLATEAU] = (rising_edge_shift
+                                                   - falling_edge_shift)
+        out_arr[type_arr == cls.CENTER_WELL] = (falling_edge_shift
+                                                - rising_edge_shift)
+        return out_arr
+
+
+def _start_pos_to_end_pos(start_pos,
+                          break_locs,
+                          line_length):
+    # compute the end (not inclusive) position of each region
+    # by shifting the start position vector
+    end_pos = start_pos.copy()
+    end_pos[break_locs] = line_length
+    return np.append(end_pos[1:], line_length)
 
 
 def shift_pixel_edges(x,
-                      axis=1,
+                      scan_axis=-1,
                       *,
-                      leading_edge_shift,
+                      rising_edge_shift,
                       falling_edge_shift,
                       warn=True,
-                      verbose=False):
-    assert x.ndim == 2, 'Array must be exactly 2-dimensional'
+                      reverse_scan_direction=False,
+                      do_plot_results=True):
+    # move scan axis to the final axis
+    x = np.moveaxis(x, scan_axis, -1)
+    moveax_shape = x.shape
+    scanline_length = moveax_shape[-1]
 
-    transpose = axis == 0
-    if transpose:
-        x = x.T
+    # reshape to have scan axis along axis 1 and all other dims along axis 0
+    x = x.reshape((-1, scanline_length))
+    if do_plot_results:
+        x_compare = x
+    all_lines_shape = x.shape
+    num_scanlines = all_lines_shape[0]
 
-    # - Get All edges with diff
-    # - Arrange edges into big vector from all image rows
-    #
+    # flip processed array if using a reversed scan direction
+    # i.e. scanning from scanline position -1 to position 0
+    if reverse_scan_direction:
+        x = np.fliplr(x)
 
-    diff_arr = np.diff(x, axis=1)
-    le_index_tup = np.where(diff_arr > 0)  # leading edges
-    fe_index_tup = np.where(diff_arr < 0)  # falling edges
-    le_ri, le_ci = le_index_tup
-    fe_ri, fe_ci = fe_index_tup
+    log.debug('Shifting pixel edges for {:d} scanlines,'
+              ' each scanline has length {:d}.',
+              num_scanlines, scanline_length)
 
-    for row in range(x.shape[0]):
-        le = le_ci[le_ri == row]
-        fe = le_ci[fe_ri == row]
-        all_e_raw = np.concatenate([le, fe])
-        if all_e_raw.size == 0:
-            continue
-        e_argsort = np.argsort(all_e_raw)
-        all_e = all_e_raw[e_argsort]
+    # use np.diff() along the scan direction to determine where all changes
+    # in value occur. Note that lines with no changes in value will not be
+    # considered in the following computations
+    diffs = np.diff(x, axis=-1)
+    edge_index_tup = np.where(diffs != 0)
+    raw_edge_line_ind, raw_edge_pos = edge_index_tup
 
-    le_mask_raw = np.concatenate([np.ones(le.shape, dtype=bool),
-                                  np.ones(fe.shape, dtype=bool)])
-    le_mask = le_mask_raw[e_argsort]
-    fe_mask = np.logical_not(le_mask)
+    # indexes where scanline breaks occur in the raw_edge_pos vector
+    (line_break_locs_raw,) = np.where(
+        np.diff(raw_edge_line_ind, prepend=-1) != 0)
 
-    new_le = le + leading_edge_shift
-    new_fe = fe + falling_edge_shift
+    # convert from the raw edge position to a vector of every "left" edge
+    # where either a pixel value changes or a scanline begins
+    region_start_pos = raw_edge_pos + 1
+    region_start_pos = np.insert(region_start_pos,
+                                 line_break_locs_raw,
+                                 0)
+    # number of identified regions
+    num_regions = region_start_pos.size
+    log.debug('Identified {:d} regions across all hetrogenously'
+              '-valued scanlines.', num_regions)
 
-    x_prime = np.array()
+    # the vector index of the beginnin of each scanline break
+    (line_break_locs,) = np.where(region_start_pos == 0)
 
-    if transpose:
-        x_prime = x_prime.T
-    return x_prime
+    # the index of the line corrresponding to each region
+    region_line_ind = np.insert(raw_edge_line_ind,
+                                line_break_locs_raw,
+                                raw_edge_line_ind[line_break_locs_raw])
+
+    # extract the pixel value for each region
+    region_vals = x[region_line_ind, region_start_pos]
+
+    if warn:
+        region_end_pos = _start_pos_to_end_pos(
+            region_start_pos, line_break_locs, scanline_length)
+        region_widths = region_end_pos - region_start_pos
+
+        line_start_locs = line_break_locs
+        line_end_locs = np.append(line_break_locs[1:] - 1,
+                                  num_regions - 1)
+
+        line_start_filt = np.zeros((num_regions,), dtype=bool)
+        line_start_filt[line_start_locs] = True
+        line_end_filt = np.zeros((num_regions,), dtype=bool)
+        line_end_filt[line_end_locs] = True
+
+        end_diff = np.diff(region_vals, n=1, prepend=0)
+        start_diff = np.diff(region_vals, n=1, append=0)
+        ddiff = start_diff - end_diff
+
+        region_class = np.zeros((num_regions,), dtype=RegionType)
+        region_class[ddiff == 0] = RegionType.CENTER_STEP
+        region_class[ddiff > 0] = RegionType.CENTER_WELL
+        region_class[ddiff < 0] = RegionType.CENTER_PLATEAU
+        region_class[line_end_filt
+                     & (end_diff > 0)] = RegionType.END_PLATEAU
+        region_class[line_end_filt
+                     & (end_diff < 0)] = RegionType.END_WELL
+        region_class[line_start_filt
+                     & (start_diff > 0)] = RegionType.START_WELL
+        region_class[line_start_filt
+                     & (start_diff < 0)] = RegionType.START_PLATEAU
+
+        width_cutoffs = RegionType.to_width_cutoff(
+            region_class,
+            rising_edge_shift=rising_edge_shift,
+            falling_edge_shift=falling_edge_shift)
+        lost_regions = region_widths <= width_cutoffs
+
+        if np.any(lost_regions):
+            num_lost_regions = np.sum(lost_regions)
+            log.warning(
+                '{:d} scanline region(s) will be lost when performing pixel'
+                ' shifts because the region\'s width is too narrow.',
+                num_lost_regions)
+
+            fail_start_pos = region_start_pos[lost_regions]
+            fail_line_ind = region_line_ind[lost_regions]
+            fail_region_width = region_widths[lost_regions]
+
+            plt.figure(figsize=(10, 10))
+            plt.imshow(x, cmap='gray')
+            highlights = [
+                mpl.patches.Rectangle((stt - 0.5, l - 0.5), w, 1)
+                for stt, l, w in zip(fail_start_pos,
+                                     fail_line_ind,
+                                     fail_region_width)]
+            patch_props = dict(
+                facecolor='r',
+                alpha=0.4,
+                lw=1,
+                edgecolor='r',
+                hatch='x')
+            hlpc = mpl.collections.PatchCollection(
+                highlights, **patch_props)
+            p = mpl.patches.Patch(**patch_props,
+                                  label='lost regions')
+
+            default_viewport = 75
+            y_lims = [
+                np.max([np.min(fail_line_ind) - (default_viewport / 2), -0.5]),
+                np.min([np.max(fail_line_ind)
+                        + (default_viewport / 2), num_scanlines + 0.5])]
+            x_lims = [
+                np.max([np.min(fail_start_pos) - (default_viewport / 2), -0.5]),
+                np.min([np.max(fail_start_pos + fail_region_width)
+                        + (default_viewport / 2), num_scanlines + 0.5])]
+            if reverse_scan_direction:
+                x_lims = np.flip(np.array(x_lims))
+                x_label_addn = ', Reversed'
+            else:
+                x_label_addn = ''
+            plt.xlim(x_lims)
+            plt.ylim(np.flip(np.array(y_lims)))
+
+            plt.xlabel(f'Scanline Position{x_label_addn} (pixel)')
+            plt.ylabel('Scanline Index (a.u.)')
+            plt.title('WARNING: The highlighted region(s) will'
+                      ' be lost when performing pixel shifts.',
+                      color='r', fontweight='bold')
+            plt.legend(handles=[p])
+            ax = plt.gca()
+            ax.add_collection(hlpc)
+
+    # compute the change from value to value across regions to classify the
+    # edge type
+    region_val_diff = np.diff(region_vals, prepend=0)
+
+    # mask for rising edge, falling, edge, and positions which can be
+    # validly shifted
+    is_pos_rising = region_val_diff > 0
+    is_pos_falling = np.logical_not(is_pos_rising)
+    is_pos_shiftable = np.ones((num_regions,), dtype=bool)
+    is_pos_shiftable[line_break_locs] = False
+
+    # If the position is determined to be a rising edge AND can be
+    # validly shifted, then shift by the parametrized amount. Similarly
+    # for the falling edge.
+    new_region_start_pos = region_start_pos.copy()
+    rise_filt = is_pos_rising & is_pos_shiftable
+    new_region_start_pos[rise_filt] += rising_edge_shift
+    fall_filt = np.logical_not(is_pos_rising) & is_pos_shiftable
+    new_region_start_pos[fall_filt] += falling_edge_shift
+    new_region_start_pos = np.clip(new_region_start_pos, 0, scanline_length)
+
+    # new end position is computed
+    new_region_end_pos = _start_pos_to_end_pos(
+        new_region_start_pos, line_break_locs, scanline_length)
+
+    # compute the new region widths after perfoming shifts
+    new_region_widths = new_region_end_pos - new_region_start_pos
+
+    # subset each of the following variabled to only retain values where
+    # the modified region has a positive width
+    valid_regions = new_region_widths > 0
+    v_region_line_ind = region_line_ind[valid_regions]
+    v_region_start_pos = new_region_start_pos[valid_regions]
+    v_region_vals = region_vals[valid_regions]
+    v_region_widths = new_region_widths[valid_regions]
+
+    # convert the line-index and scanline-position-index
+    # into linear indexes
+    raveled_region_start_pos = np.ravel_multi_index(
+        (v_region_line_ind, v_region_start_pos),
+        all_lines_shape)
+    raveled_region_end_pos = (raveled_region_start_pos
+                              + v_region_widths)
+
+    # the following lines implement a vectorized np.arange() with two vectors
+    # of corresponding starts and stops and the output assembled into a
+    # single concatenated vector of the results
+    repeat_lengths = raveled_region_end_pos - raveled_region_start_pos
+    vector_arange = (
+            np.repeat(raveled_region_end_pos - repeat_lengths.cumsum(),
+                      repeat_lengths)
+            + np.arange(repeat_lengths.sum()))
+    # region values are repeated to match the raveled and aranged indexes
+    updated_values = np.repeat(v_region_vals, repeat_lengths)
+
+    # finally we will update the input ndarray with the new regions
+    x_prime = x.copy().ravel()
+    x_prime[vector_arange] = updated_values
+
+    # reshape and transform the output to that of the original input
+    x_prime = x_prime.reshape((-1, scanline_length))
+    if reverse_scan_direction:
+        x_prime = np.fliplr(x_prime)
+
+    if do_plot_results:
+        fig = plt.figure(figsize=(10, 10))
+        ax = plt.gca()
+        ax.imshow(x_prime, cmap='gray')
+        im_diff = x_prime.astype(float) - x_compare.astype(int)
+        im_diff[im_diff < 0] = -1
+        im_diff[im_diff > 0] = 1
+        is_diff = im_diff != 0
+        cmap = mpl.colormaps['PiYG']
+        ax.imshow(im_diff,
+                  cmap=cmap,
+                  alpha=is_diff.astype(float),
+                  vmin=-1,
+                  vmax=1)
+        ax.set_xlabel('Scanline Position (pixel)')
+        ax.set_ylabel('Scanline Index (a.u.)')
+        ax.set_title(f'Result of pixel shift with changes highlighted\n'
+                     f'(rising_edge_shift = {rising_edge_shift:+d},'
+                     f' falling_edge_shift = {falling_edge_shift:+d})')
+        p0 = mpl.patches.Patch(color=cmap(0.0), label='removed/decreased')
+        p1 = mpl.patches.Patch(color=cmap(1.0), label='added/increased')
+        ax.legend(handles=[p0, p1],
+                  title='Changed Regions',
+                  framealpha=0.9)
+        plt.show()
+
+    x_prime = x_prime.reshape(moveax_shape)
+    return np.moveaxis(x_prime, -1, scan_axis)
 
 
 
@@ -457,8 +730,8 @@ def split_file(pth, max_size, preview_shape=None):
 
     if num_outfiles > 1:
 
-        print('Splitting output file into %d files of approx %.2f MB.\n'
-              % (num_outfiles, max_size_mb))
+        log.info('Splitting output file into {:d} files of approx {:.2f} MB.\n',
+                 num_outfiles, max_size_mb)
 
         with open(pth, 'r') as ref_file:
             ref_file_text = ref_file.read()
@@ -511,15 +784,17 @@ def split_file(pth, max_size, preview_shape=None):
         assert start_idx == n_ref_file_lines, 'Unexpected error when splitting.'
 
     else:
-        print('No file splitting performed since the input file is under the '
-              '%.2f MB limit.' % max_size_mb)
+        log.info(
+            'No file splitting performed since the input file is under the '
+            '{:.2f} MB limit.',
+            max_size_mb)
 
 
 def preview_command_file(file_path,
                          image_size=(1, 1),
                          verbose=False):
     try:
-        print('\nAttempting to preview command file "%s"' % file_path)
+        log.info('\nAttempting to preview command file "{:s}"', file_path)
 
         with open(file_path, 'r') as f:
             file_lines = f.readlines()
@@ -538,8 +813,9 @@ def preview_command_file(file_path,
         ax.set_aspect('equal')
 
         if len(tokens) <= 2:
-            print(f'Insufficient number of values ({len(tokens):d}) found in '
-                  f'command file to produce any mask shapes.')
+            log.info('Insufficient number of values ({:d}) found in '
+                     'command file to produce any mask shapes.',
+                     len(tokens))
             plt.text(0.5, 0.5, '( Empty Mask File )',
                      transform=ax.transAxes,
                      ha='center',
@@ -567,9 +843,9 @@ def preview_command_file(file_path,
             print_prd = ceil(len(chunks) / 3)
             for i, c in enumerate(chunks):
                 if verbose or (i % print_prd) == (print_prd - 1):
-                    print('Chunk {:6,d} : {:s}'.format(i + 1, str(c)))
+                    log.info('Chunk {:6,d} : {:s}', i + 1, str(c))
 
-            print('Creating Figure')
+            log.info('Creating Figure')
             legend_handles = dict()
             for i, c in enumerate(chunks):
                 point_list, label_int = c
@@ -618,19 +894,19 @@ def preview_command_file(file_path,
 
         plt.setp(ax.get_xticklabels(), rotation=-90, ha='center')
 
-        print('Saving Figure')
+        log.info('Saving Figure')
         csutils.save_figures(
             directory=figure_dir,
             filename=figure_savename)
 
         if csutils.isnotebook():
-            print('Displaying preview figure in notebook output:')
+            log.info('Displaying preview figure in notebook output:')
             plt.show()
         else:
             plt.close(f)
 
     except Exception as e:
-        print(f'Preview of command file failed with error: {e}')
+        log.warning('Preview of command file failed with error.', exc_info=e)
 
 
 class ChunkList(object):
@@ -688,17 +964,18 @@ class ChunkList(object):
                     label_to_id[c.value] = next_id_int
 
                 c.label = c.value
-            print('Auto-assigned chunk labels to be chunk values, and mapped '
-                  'labels to integer ids.')
-            print()
+            log.info(
+                'Auto-assigned chunk labels to be chunk values, and mapped '
+                'labels to integer ids.')
+            log.info('')
 
         next_call_kwargs = {'label_to_id': label_to_id}
 
         if split_values or build_up_values:
-            print(
-                f'Creating a series of ChunkLists based on image vals and '
-                f'using method '
-                f'{"`split_values`" if split_values else "`build_up_values`"}.')
+            log.info(
+                'Creating a series of ChunkLists based on image vals and '
+                'using method {:s}.',
+                "`split_values`" if split_values else "`build_up_values`")
             chunk_list_map = dict()
             for c in self:
                 try:
@@ -732,8 +1009,9 @@ class ChunkList(object):
                 if auto_assign_chunk_labels:
                     new_label_to_id = [(d, (i + 1))
                                        for i, d in enumerate(deltas)]
-                    print('Will overwrite previously auto-assigned labels with '
-                          'delta value-based labels [(delta, id_int), ...]:')
+                    log.info('Will overwrite previously auto-assigned labels '
+                             'with delta value-based labels [(delta, id_int), '
+                             '...]:')
                     pp.pprint(new_label_to_id)
 
                 for i, d in enumerate(deltas):
@@ -754,7 +1032,7 @@ class ChunkList(object):
 
                     output_dict[f'd_layer={i+1:03d}_delta={valstr}'] = command
 
-            print('Multi ChunkList command generation complete.\n')
+            log.info('Multi ChunkList command generation complete.\n')
             return output_dict
 
         else:
@@ -762,7 +1040,7 @@ class ChunkList(object):
             if not auto_assign_chunk_labels:
                 chunk_call_kwargs['label'] = self.label
 
-            print('> Generating ChunkList command string.')
+            log.info('> Generating ChunkList command string.')
             return command_join_str.join(c.pam_command(**chunk_call_kwargs)
                                          for c in self)
 
