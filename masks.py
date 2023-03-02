@@ -1273,7 +1273,7 @@ def quick_mask_generation_from_images(
     num_files = len(file_list)
 
     log.info('Matched {:d} image files to perform mask conversion on.',
-             num_files))
+             num_files)
 
     if not file_list:
         log.warning('Did not match any image files using search path: '
@@ -1298,8 +1298,6 @@ def quick_mask_generation_from_images(
 
             if write_command_files_kwargs is None:
                 write_command_files_kwargs = dict()
-
-            raise NotImplementedError()
 
             write_command_files_kwargs.setdefault('do_preview', plot_results)
             mask.write_command_files(**write_command_files_kwargs)
