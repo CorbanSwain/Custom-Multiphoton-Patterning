@@ -1,7 +1,8 @@
 #!python3
 # masks.py
-import shutil
 
+import shutil
+import sys
 import numpy as np
 import imageio
 import c_swain_python_utils as csutils
@@ -18,6 +19,7 @@ import enum
 log = csutils.get_logger(__name__)
 csutils.apply_standard_logging_config(window_format='cli')
 
+
 class Mask(object):
     save_dir_tag = 'mask_outputs'
 
@@ -33,14 +35,14 @@ class Mask(object):
                            do_points_only=False,
                            dim_priority='x',
                            do_group_chunks=True):
-        log.info('Chunking mask file into rectangular regions ...')
+        log.debug('Chunking mask file into rectangular regions ...')
 
         chunk_lists = []
 
         z_size, tot_y_size, tot_x_size = self.mask_data.shape
 
         for z_loc, zslice in enumerate(self.mask_data):
-            log.info('> Analyzing mask at z-slice {:3d} of {:3d}',
+            log.debug('> Analyzing mask at z-slice {:3d} of {:3d}',
                      z_loc + 1, z_size)
 
             chunk_list = ChunkList()
@@ -66,7 +68,7 @@ class Mask(object):
 
                 for a_loc, rowlike in rowlike_iter:
                     if a_loc % 100 == 99:
-                        log.info('> > Analyzing mask at {:s} {:6,d}',
+                        log.debug('> > Analyzing mask at {:s} {:6,d}',
                                  'row' if dim_priority == 0 else 'column',
                                  a_loc + 1)
                     ref_idxs = np.where(np.diff(rowlike))[0] + 1
@@ -127,8 +129,8 @@ class Mask(object):
 
             chunk_lists.append(chunk_list)
 
-        log.info('Done chunking.')
-        log.info('Mask decomposed into {:,d} chunks.',
+        log.debug('Done chunking.')
+        log.debug('Mask decomposed into {:,d} chunks.',
                  sum([len(cl.chunks) for cl in chunk_lists]))
         return chunk_lists
 
@@ -234,7 +236,7 @@ class Mask(object):
         pam_command_kwargs = pam_command_kwargs or dict()
 
         if do_optimize_file_size:
-            log.info('\nOptimizing file size by testing different chunking '
+            log.info('Optimizing file size by testing different chunking '
                      'methods.')
 
             from itertools import product
@@ -255,7 +257,7 @@ class Mask(object):
             best_size = None
 
             for i, (do_invert, dim_priority) in enumerate(trial_iterator):
-                log.info('METHOD {:d} of {:d}: do_invert={}, '
+                log.debug('METHOD {:d} of {:d}: do_invert={}, '
                          'dim_priority="{}"',
                          i + 1,
                          n_trials,
@@ -278,9 +280,8 @@ class Mask(object):
                     best_size = full_size
                     did_invert = do_invert
                     chunk_lists = tmp_chunk_lists
-                log.info('\n')
 
-            log.info('BEST SIZE found to be {:,d} chunks with method # {:d}.',
+            log.debug('BEST SIZE found to be {:,d} chunks with method # {:d}.',
                      best_size, best_method + 1)
 
         else:
@@ -294,7 +295,7 @@ class Mask(object):
         csutils.touchdir(save_dir)
         make_path = ft.partial(os.path.join, save_dir)
 
-        log.info('Will save mask file(s) in directory "{:s}".\n', save_dir)
+        log.info('Will save mask file(s) in directory:\n\t"{:s}".', save_dir)
 
         if do_optimize_file_size and did_invert:
             invert_flag = 'INVERTED_'
@@ -336,7 +337,7 @@ class Mask(object):
 
             pam_command_kwargs['label_to_id'] = label_to_id
 
-            log.info('Auto-set `label_to_id` dict based on values of entire '
+            log.debug('Auto-set `label_to_id` dict based on values of entire '
                      'mask.')
 
             log.info('Writing file with conversion factors between palette '
@@ -359,9 +360,8 @@ class Mask(object):
             with open(file_path, 'w') as f:
                 f.writelines(firstlines + lines)
 
-            log.info('Wrote lookup table to "{:s}":', file_path)
-            log.info(''.join(firstlines + lines))
-            log.info('\n')
+            log.debug('Wrote lookup table to "{:s}":', file_path)
+            log.debug(''.join(firstlines + lines))
         else:
             # TODO - Handle max output values when not auto-setting label to id.
             #        Maybe need to pass param to the `cl.pam_command()`
@@ -408,7 +408,7 @@ class Mask(object):
                 file_name = (f'{size_str}_z={z_index:03d}_{invert_flag}'
                              f'{self._meta_str}pam.txt')
                 file_path = make_path(file_name)
-                log.info(file_path)
+                log.debug(file_path)
                 with open(file_path, 'w') as f:
                     f.write(cmd_str)
 
@@ -426,13 +426,13 @@ class Mask(object):
             file_paths.append((z_index, file_path))
 
         if do_prepare_sequential_import:
-            log.info(
+            log.debug(
                 '\nCopying PAM files to subfolder to prepare for sequential '
                 'z-stack import.')
 
             seq_dir = make_path(f'SEQ_IMPORT_{size_str}x{len(file_paths)}_'
                                 f'{invert_flag}{self._meta_str}pams')
-            log.info('Sequential import directory: "{:s}"', seq_dir)
+            log.debug('Sequential import directory: "{:s}"', seq_dir)
             if os.path.exists(seq_dir):
                 shutil.rmtree(seq_dir)
             csutils.touchdir(seq_dir)
@@ -440,7 +440,7 @@ class Mask(object):
                 new_path = os.path.join(seq_dir, f'{z_index:03d}.txt')
                 shutil.copyfile(file_path, new_path)
 
-        log.info('\nMask command file(s) generation complete!')
+        log.info('Mask command file(s) generation complete!')
 
 
 class RegionType(enum.IntEnum):
@@ -768,7 +768,7 @@ def split_file(pth, max_size, preview_shape=None):
 
     if num_outfiles > 1:
 
-        log.info('Splitting output file into {:d} files of approx {:.2f} MB.\n',
+        log.info('Splitting output file into {:d} files of approx {:.2f} MB.',
                  num_outfiles, max_size_mb)
 
         with open(pth, 'r') as ref_file:
@@ -822,7 +822,7 @@ def split_file(pth, max_size, preview_shape=None):
         assert start_idx == n_ref_file_lines, 'Unexpected error when splitting.'
 
     else:
-        log.info(
+        log.debug(
             'No file splitting performed since the input file is under the '
             '{:.2f} MB limit.',
             max_size_mb)
@@ -832,7 +832,7 @@ def preview_command_file(file_path,
                          image_size=(1, 1),
                          verbose=False):
     try:
-        log.info('\nAttempting to preview command file "{:s}"', file_path)
+        log.info('Attempting to preview command file "{:s}"', file_path)
 
         with open(file_path, 'r') as f:
             file_lines = f.readlines()
@@ -881,9 +881,9 @@ def preview_command_file(file_path,
             print_prd = ceil(len(chunks) / 3)
             for i, c in enumerate(chunks):
                 if verbose or (i % print_prd) == (print_prd - 1):
-                    log.info('Chunk {:6,d} : {:s}', i + 1, str(c))
+                    log.debug('Chunk {:6,d} : {:s}', i + 1, str(c))
 
-            log.info('Creating Figure')
+            log.debug('Creating Figure')
             legend_handles = dict()
             for i, c in enumerate(chunks):
                 point_list, label_int = c
@@ -1002,15 +1002,15 @@ class ChunkList(object):
                     label_to_id[c.value] = next_id_int
 
                 c.label = c.value
-            log.info(
+            log.debug(
                 'Auto-assigned chunk labels to be chunk values, and mapped '
                 'labels to integer ids.')
-            log.info('')
+            log.debug('')
 
         next_call_kwargs = {'label_to_id': label_to_id}
 
         if split_values or build_up_values:
-            log.info(
+            log.debug(
                 'Creating a series of ChunkLists based on image vals and '
                 'using method {:s}.',
                 "`split_values`" if split_values else "`build_up_values`")
@@ -1047,7 +1047,7 @@ class ChunkList(object):
                 if auto_assign_chunk_labels:
                     new_label_to_id = [(d, (i + 1))
                                        for i, d in enumerate(deltas)]
-                    log.info('Will overwrite previously auto-assigned labels '
+                    log.debug('Will overwrite previously auto-assigned labels '
                              'with delta value-based labels [(delta, id_int), '
                              '...]:')
                     pp.pprint(new_label_to_id)
@@ -1070,7 +1070,7 @@ class ChunkList(object):
 
                     output_dict[f'd_layer={i+1:03d}_delta={valstr}'] = command
 
-            log.info('Multi ChunkList command generation complete.\n')
+            log.debug('Multi ChunkList command generation complete.\n')
             return output_dict
 
         else:
@@ -1078,7 +1078,7 @@ class ChunkList(object):
             if not auto_assign_chunk_labels:
                 chunk_call_kwargs['label'] = self.label
 
-            log.info('> Generating ChunkList command string.')
+            log.debug('> Generating ChunkList command string.')
             return command_join_str.join(c.pam_command(**chunk_call_kwargs)
                                          for c in self)
 
@@ -1224,6 +1224,93 @@ class Chunk(object):
             ', '.join('{:d}'.format(x) for x in self.total_xy_size),
             self.value,
             'None' if self.label is None else self.label)
+
+
+DEFAULT_IM_EXTNS = ['.tif', '.tiff', '.png']
+
+
+def quick_mask_generation_from_images(
+        path,
+        *,
+        recursive=True,
+        plot_results=False,
+        file_extensions=None,
+        shift_pixel_kwargs=None,
+        write_command_files_kwargs=None,
+        mask_from_image_kwargs=None,
+       ):
+
+    file_list = []
+
+    log.info('Beginning quick mask generation...')
+
+    if not isinstance(path, str):
+        msg = (f'The provided argument for `path` was of type ' 
+               f'`{type(path).__name__}`, expected `str`.')
+        log.error(msg)
+        raise TypeError(msg)
+
+    if not os.path.exists(path):
+        log.error("Provided file path does not exist.")
+        msg = f'The file path "{path}" could not be found.'
+        raise ValueError(msg)
+
+    if os.path.isfile(path):
+        file_list.append(path)
+
+    if os.path.isdir(path):
+        import glob
+
+        if file_extensions is None:
+            file_extensions = DEFAULT_IM_EXTNS
+        elif isinstance(file_extensions, str):
+            file_extensions = [file_extensions]
+
+        for extn in file_extensions:
+            search_path = os.path.join(path, '**', '*' + extn)
+            file_list.extend(glob.glob(search_path, recursive=recursive))
+
+    num_files = len(file_list)
+
+    log.info('Matched {:d} image files to perform mask conversion on.',
+             num_files))
+
+    if not file_list:
+        log.warning('Did not match any image files using search path: '
+                    '"{}".', path)
+        return
+
+    log.info('')
+    for i, file_path in enumerate(file_list):
+        _, file_name = os.path.split(file_path)
+        log.info('# {:d} of {:d} | Attempting conversion of file "{:s}".',
+                 i + 1, num_files, file_name)
+
+        try:
+            if mask_from_image_kwargs is None:
+                mask_from_image_kwargs = dict()
+
+            mask = Mask.from_image(im_path=file_path,
+                                   **mask_from_image_kwargs)
+            if shift_pixel_kwargs:
+                shift_pixel_kwargs.setdefault('do_plot_results', plot_results)
+                mask.shift_pixel_edges(**shift_pixel_kwargs)
+
+            if write_command_files_kwargs is None:
+                write_command_files_kwargs = dict()
+
+            raise NotImplementedError()
+
+            write_command_files_kwargs.setdefault('do_preview', plot_results)
+            mask.write_command_files(**write_command_files_kwargs)
+
+        except Exception as e:
+            log.warning('Conversion of "{}" failed.', file_path, exc_info=e)
+
+        log.info('-' * 79)
+
+    log.info('')
+    log.info('Batch mask generation complete! Exiting.')
 
 
 def main():
