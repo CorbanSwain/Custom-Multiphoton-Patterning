@@ -15,11 +15,13 @@ maskZPitch_um = patternZPitch_um;
 
 numIterations = 20;
 iterGaussSigma = 0;
-outputNum = 003;
+outputNum = 004;
 
 patternZPadSize = 3;
 
 %% setup
+addpath('cs-matlab-utils');
+
 L = csmu.Logger(mfilename);
 L.windowLevel = csmu.LogLevel.DEBUG;
 
@@ -130,7 +132,7 @@ else
     assert(computeToPageRatio > 1);
     maskPageToComputeRes = @(page) ...
         page(patternYMaskIdVec, patternXMaskIdVec);
-    if csmu.isint(computeToPageRatio)
+    if csmu.isint(computeToPageRatio) && false
         patternPageToMaskRes = @(page) ...
             averagingDownsample(page, computeToPageRatio);
     else
@@ -233,27 +235,27 @@ csplot.quick.projView(testForwProj, defaultProjViewArgs{:}, ...
 %% initial guess
 
 % FIXME - add more choices for initial guess
-maskGuess = patternToMask(refPattern);
-
-L.debug('Range of initial mask (pre correction) is [%s]', ...
-    num2str(csmu.range(maskGuess, 'all')));
-
-maskGuess = maskGuess ./ backCorrection;
-
-L.debug('Range of initial mask (post correction) is [%s]', ...
-    num2str(csmu.range(maskGuess, 'all')));
-
-csplot.quick.projView(maskGuess, defaultProjViewArgs{:}, ...
-    'ScaleBarLength', 50, ...
-    'FigureName', 'Initial Mask (Raw)', ...
-    'UnitRatio', [[1, 1] * maskPixelPitch_um, maskZPitch_um]);
-
-maskGuess = csmu.bound(maskGuess, 0, 1);
-
-csplot.quick.projView(double(maskGuess > 0.5), defaultProjViewArgs{:}, ...
-    'ScaleBarLength', 50, ...
-    'FigureName', 'Initial Mask (Binary)', ...
-    'UnitRatio', [[1, 1] * maskPixelPitch_um, maskZPitch_um]);
+% maskGuess = patternToMask(refPattern);
+% 
+% L.debug('Range of initial mask (pre correction) is [%s]', ...
+%     num2str(csmu.range(maskGuess, 'all')));
+% 
+% maskGuess = maskGuess ./ backCorrection;
+% 
+% L.debug('Range of initial mask (post correction) is [%s]', ...
+%     num2str(csmu.range(maskGuess, 'all')));
+% 
+% csplot.quick.projView(maskGuess, defaultProjViewArgs{:}, ...
+%     'ScaleBarLength', 50, ...
+%     'FigureName', 'Initial Mask (Raw)', ...
+%     'UnitRatio', [[1, 1] * maskPixelPitch_um, maskZPitch_um]);
+% 
+% maskGuess = csmu.bound(maskGuess, 0, 1);
+% 
+% csplot.quick.projView(double(maskGuess > 0.5), defaultProjViewArgs{:}, ...
+%     'ScaleBarLength', 50, ...
+%     'FigureName', 'Initial Mask (Binary)', ...
+%     'UnitRatio', [[1, 1] * maskPixelPitch_um, maskZPitch_um]);
 
 % csplot.quick.projView(double(maskGuess > 0.5) - refPatternRaw, ...
 %     defaultProjViewArgs{:}, ...
@@ -266,6 +268,8 @@ csplot.quick.projView(double(maskGuess > 0.5), defaultProjViewArgs{:}, ...
 % figure('Name', 'Mask Guess');
 % csmu.imshow3d(maskGuess - refPatternRaw, [-1, 1], 'cool');
 
+maskGuess = 0.5 * ones(maskSpaceSize);
+
 
 %% deconvolution
 L.info('Beginning Deconvolution.');
@@ -276,16 +280,18 @@ errorNorm = sum(refPattern, 'all');
 duplicatedMask = maskSpace;
 for iPage = 1:maskSpaceSize(3)
     duplicatedMask(:, :, iPage) = ...
-        patternPageToMaskRes(...
-        mean(refPattern(:, :, backPatternSpaceZSel{iPage}), 3));
+        averagingDownsample(...
+        mean(refPattern(:, :, backPatternSpaceZSel{iPage}), 3), ...
+        computeToPageRatio);
 end
 errRef = maskToPattern(duplicatedMask) ./ forwCorrection;
 errRef = sum(abs(refPattern - errRef), 'all') / errorNorm;
-plot([0, 20], [errRef, errRef], '-.k', 'LineWidth', 2, ...
+pref = plot([0, numIterations], ...
+    ([errRef, errRef] - errRef) / errRef, '-.k', 'LineWidth', 2, ...
     'DisplayName', 'Reference (2X compute, patterns as-is)');
 hold('on');
-p = plot(0, 0, '.:', 'MarkerSize', 20, 'LineWidth', 2, 'DisplayName', ...
-    '2X compute, z-pad-2, 0.5 init, momentum [0.3,0.05,0.01] update weight, NO-Gaussian');
+p = plot(0, NaN, '.:', 'MarkerSize', 20, 'LineWidth', 2, 'DisplayName', ...
+    '2X compute, z-pad-3, 0.5 init, momentum [0.3,0.05,0.01] update weight, NO-Gaussian, blur-downsamp-1, avg-sel, ref-fix');
 grid('on');
 hold('on');
 
@@ -296,8 +302,6 @@ p.XData = [];
 p.YData = [];
 
 legend();
-
-maskGuess(:) = 0.5;
 
 updateHistory = repmat(maskSpace, 1, 1, 1, 3);
 weights = reshape(4 .^ (-1 * (1:3)), 1, 1, 1, []);
@@ -355,7 +359,9 @@ for iIteration = 0:numIterations
     % end
     
     forwardTest = maskToPattern(maskGuessBin) ./ forwCorrection; 
-    errorMetric = sum(abs(refPattern - forwardTest), 'all') / errorNorm;
+    errorMetric = ...
+        ((sum(abs(refPattern - forwardTest), 'all') / errorNorm) - errRef) ...
+        / errRef;
     p.XData = [p.XData, iIteration];
     p.YData = [p.YData, errorMetric];
     drawnow();
@@ -410,12 +416,14 @@ pT.XData = [];
 pT.YData = [];
 bestErr = [];
 bestThresh = [];
-thresholds = linspace(0.5 - 0.01, 0.5, 9);
+thresholds = linspace(0.5 - 0.01, 0.5 + 0.01, 15);
 numThresh = length(thresholds);
 for iThresh = 1:numThresh
     maskGuessBin = double(bestMask > thresholds(iThresh));       
     forwardTest = maskToPattern(maskGuessBin) ./ forwCorrection;
-    errorMetric = sum(abs(refPattern - forwardTest), 'all') / errorNorm;
+    errorMetric = ...
+        ((sum(abs(refPattern - forwardTest), 'all') / errorNorm) - errRef) ...
+        / errRef;
 
     if isempty(bestErr)
         bestErr = errorMetric;
@@ -618,7 +626,7 @@ end
 
 function Y =  blurDownsample(X, xSel, ySel)
 factor = size(X) / [length(ySel), length(xSel)];
-sigma = factor / 4;
+sigma = factor / 1;
 XPrime = imgaussfilt(X, sigma, 'FilterDomain', 'spatial');
 Y = XPrime(ySel, xSel);
 end
